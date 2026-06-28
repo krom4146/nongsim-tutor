@@ -1,0 +1,8 @@
+node_modules/
+dist/
+verify-dist/
+.npm-cache/
+*.log
+.env
+.env.local
+.vscode/
