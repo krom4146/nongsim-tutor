@@ -1053,12 +1053,12 @@ function App() {
       <div className="entry-shell main-entry-screen">
         <main className="entry-card">
           <Brand />
-          <a className="academy-link" href="https://nh-gurye-edu.vercel.app/" target="_blank" rel="noreferrer">
+          <a className="academy-link" href="https://nh-gurye-edu.vercel.app/" target="_blank" rel="noreferrer" aria-label="농협교육원 통합관리앱 새 창으로 열기">
             농협교육원 통합관리앱 <span>↗</span>
           </a>
           <div className="entry-copy">
             <span className="eyebrow">AI 교육 평가·전이 관리 에이전트</span>
-            <h1>교육의 순간을<br />현장의 변화로 연결합니다.</h1>
+            <h1>교육의 순간을<br />현장의 변화로<br />연결합니다.</h1>
             <p>목표부터 수료 성찰, 2개월 후 현업 적용까지 하나의 데이터 흐름으로 확인하세요.</p>
           </div>
           <label className="field">
@@ -1140,12 +1140,13 @@ function App() {
 function SplashScreen({ phase }) {
   return (
     <div className={`splash-screen ${phase}`} aria-label="농심튜터 시작 화면">
-      <div className="splash-pattern" aria-hidden="true">NH · NH · NH · NH · NH · NH</div>
+      <div className="splash-pattern" aria-hidden="true">NH · NH · NH</div>
       <div className="splash-content">
         <div className="splash-mark">NH</div>
         <h1>NH 농심튜터</h1>
         <p>교육의 시간을 현장의 변화로</p>
-        <small>Nonghyup Education AI</small>
+        <i aria-hidden="true" />
+        <small>NONGHYUP EDUCATION AI</small>
       </div>
     </div>
   );
