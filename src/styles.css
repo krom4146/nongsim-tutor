@@ -71,6 +71,7 @@ summary:focus-visible {
 .entry-class-select button, .class-count-field button { min-height: 40px; padding: 8px 15px; border: 1px solid var(--line); border-radius: 10px; color: #506056; background: white; font-size: 11px; font-weight: 800; }
 .entry-class-select button.selected, .class-count-field button.selected { color: white; border-color: var(--green); background: var(--green); }
 input, textarea { width: 100%; border: 1px solid #cad8cd; border-radius: 14px; padding: 15px 16px; color: var(--deep); background: white; outline: none; transition: .2s; }
+input[type="date"] { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; appearance: none; -webkit-appearance: none; }
 input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px rgba(0,154,68,.1); }
 .privacy-check { display: flex; gap: 12px; padding: 14px; background: #f3f6f3; border-radius: 14px; color: #58685e; font-size: 12px; line-height: 1.5; margin: 16px 0; }
 .privacy-check input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--green); }
@@ -296,7 +297,8 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .leadership-grade-field button.selected { color: white; border-color: var(--green); background: var(--green); }
 .class-count-field { display: grid; gap: 9px; margin: 18px 0; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: #f8faf8; }
 .class-count-field small { color: var(--muted); font-size: 10px; }
-.date-range-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: center; }
+.date-range-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px; align-items: center; width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+.date-range-grid .field, .date-range-grid input { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .date-arrow { color: var(--green); font-weight: 900; }
 .create-course-button { width: 100%; min-height: 56px; margin-top: 8px; }
 .issued-code-card { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 18px; padding: 20px; border-radius: 17px; color: white; background: var(--deep); }
@@ -342,11 +344,11 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .survey-notice b { color: var(--deep); font-size: 14px; }
 .survey-notice span, .survey-notice small { color: #4f6b58; font-weight: 700; }
 .survey-mission-preview { display: grid; gap: 10px; margin: 0 0 18px; padding: 16px; border: 1px solid rgba(150,170,140,.28); border-radius: 17px; background: #fbfaf3; }
-.survey-mission-preview h3 { margin: 0; color: var(--deep); font-size: 16px; line-height: 1.45; }
+.survey-mission-preview h3 { margin: 0; color: var(--deep); font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
 .theory-caption { margin: 7px 0 0; color: #7b877f; font-size: 11px; line-height: 1.55; font-weight: 600; }
 .demo-compression-note { color: #6f766b; font-size: 11px; line-height: 1.55; font-weight: 700; }
 .mission-element-badges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 8px 0; }
-.mission-element-badges span { display: grid; gap: 4px; min-width: 0; padding: 10px; border: 1px solid rgba(150,170,140,.24); border-radius: 13px; color: #44564a; background: #f8f7ef; font-size: 11px; line-height: 1.35; }
+.mission-element-badges span { display: grid; gap: 4px; min-width: 0; padding: 10px; border: 1px solid rgba(150,170,140,.24); border-radius: 13px; color: #44564a; background: #f8f7ef; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 .mission-element-badges b { color: var(--deep); font-size: 11px; white-space: nowrap; }
 .likert-survey { display: grid; gap: 18px; }
 .likert-survey > div > b { display: block; margin-bottom: 9px; font-size: 13px; line-height: 1.45; }

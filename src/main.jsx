@@ -501,8 +501,92 @@ function createMissionCheckpoints() {
 
 const DEFAULT_TRANSFER_MISSION = "다음 주부터 매주 금요일 팀 회의가 끝나면, 결정사항을 한 줄로 정리해 팀 공유 채널에 올린다.";
 
+function missionSourceText({ goal, achievementAnswers = [], jobReflection } = {}) {
+  return [
+    achievementAnswers[2],
+    jobReflection?.workApplicationPoint,
+    goal?.actionMission,
+    goal?.focusPoint,
+    goal?.goalText,
+    goal?.text,
+  ].find((item) => item && item.trim())?.trim() || "";
+}
+
+function compactMissionTopic(text = "") {
+  return text
+    .replace(/[“”"'`]/g, "")
+    .replace(/하겠습니다\.?|합니다\.?|하기|하는 방법|상황을 개선하는|에 집중하기/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 28);
+}
+
+function buildPersonalizedTransferMission({ goal, achievementAnswers = [], jobReflection, studentName = "" } = {}) {
+  const source = missionSourceText({ goal, achievementAnswers, jobReflection });
+  if (!source) return DEFAULT_TRANSFER_MISSION;
+  if (/(민원|고객|조합원|응대|상담|소통)/.test(source)) {
+    return "다음 민원 응대가 끝난 뒤, 고객과의 대화에서 막혔던 표현 한 가지를 기록하고, 다음 상담 전에 다시 확인한다.";
+  }
+  if (/(보고|공유|결정|회의|두괄식|전달)/.test(source)) {
+    return "이번 주 첫 팀 회의가 끝난 뒤, 교육에서 정리한 핵심 내용을 한 줄로 요약해, 팀 공유 채널에 올린다.";
+  }
+  if (/(사고|예방|위험|체크|점검)/.test(source)) {
+    return "다음 업무를 시작하기 전, 사고 예방 체크 포인트 한 가지를 확인하고, 놓친 부분을 업무 메모에 남긴다.";
+  }
+  if (/(계약|서류|채권|세무|실무|절차)/.test(source)) {
+    return "다음 관련 업무를 처리하기 전, 교육에서 배운 확인 순서 한 가지를 떠올리고, 체크리스트에 표시한다.";
+  }
+  if (/(기록|질문|학습|메모|정리)/.test(source)) {
+    return "이번 주 업무를 마친 뒤, 오늘 배운 내용과 현장 질문 한 가지를 정리해, 개인 업무 메모에 기록한다.";
+  }
+  const topic = compactMissionTopic(source) || `${studentName || "나"}의 교육 목표`;
+  return `이번 주 첫 현업 적용 기회가 생기면, ${topic}와 연결되는 행동 한 가지를 실행하고, 결과를 짧게 기록한다.`;
+}
+
 function missionElementSummary(missionText = DEFAULT_TRANSFER_MISSION) {
   const text = missionText?.trim() || DEFAULT_TRANSFER_MISSION;
+  if (text.startsWith("다음 민원 응대가 끝난 뒤")) {
+    return {
+      when: "다음 민원 응대가 끝난 뒤",
+      what: "막혔던 표현 한 가지 기록",
+      how: "다음 상담 전에 다시 확인",
+    };
+  }
+  if (text.startsWith("이번 주 첫 팀 회의가 끝난 뒤")) {
+    return {
+      when: "이번 주 첫 팀 회의가 끝난 뒤",
+      what: "핵심 내용을 한 줄로 요약",
+      how: "팀 공유 채널에 올리기",
+    };
+  }
+  if (text.startsWith("다음 업무를 시작하기 전")) {
+    return {
+      when: "다음 업무를 시작하기 전",
+      what: "사고 예방 체크 포인트 확인",
+      how: "놓친 부분을 업무 메모에 남기기",
+    };
+  }
+  if (text.startsWith("다음 관련 업무를 처리하기 전")) {
+    return {
+      when: "다음 관련 업무를 처리하기 전",
+      what: "교육에서 배운 확인 순서",
+      how: "체크리스트에 표시하기",
+    };
+  }
+  if (text.startsWith("이번 주 업무를 마친 뒤")) {
+    return {
+      when: "이번 주 업무를 마친 뒤",
+      what: "배운 내용과 현장 질문 한 가지",
+      how: "개인 업무 메모에 기록",
+    };
+  }
+  if (text.startsWith("이번 주 첫 현업 적용 기회가 생기면")) {
+    return {
+      when: "이번 주 첫 현업 적용 기회가 생기면",
+      what: "목표와 연결되는 행동 한 가지",
+      how: "실행 후 결과를 짧게 기록",
+    };
+  }
   if (text.includes("매주 금요일") && text.includes("결정사항")) {
     return {
       when: "매주 금요일 팀 회의가 끝나면",
@@ -1209,6 +1293,14 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   const myGoal = course.goals.find((goal) => goal.participantId === participantId);
   const myAchievement = course.achievements.find((item) => item.participantId === participantId);
   const mySurvey = course.surveys.find((item) => item.participantId === participantId);
+  const myMission = course.missions.find((item) => item.participantId === participantId);
+  const myLatestJobReflection = [...(course.jobReflections || [])]
+    .filter((item) => item.participantId === participantId)
+    .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
+  const personalizedMissionText = buildPersonalizedTransferMission({ goal: myGoal, jobReflection: myLatestJobReflection, studentName: participantName });
+  const currentMissionText = myMission?.missionText && myMission.missionText !== DEFAULT_TRANSFER_MISSION
+    ? myMission.missionText
+    : personalizedMissionText;
   const classId = student?.classId || null;
   const className = student?.className || "미배정";
   const activeRound = course.rounds.find((round) => round.kind === "poll" && classId && round.classId === classId && !round.items.some((item) => item.participantId === participantId));
@@ -1352,9 +1444,10 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
 
   const composeAchievement = () => {
     if (!achievementAnswers[achievementStep].trim()) return notify("질문에 대한 답변을 작성해주세요.");
+    const missionText = buildPersonalizedTransferMission({ goal: myGoal, achievementAnswers, jobReflection: myLatestJobReflection, studentName: participantName });
     setAchievementDraft({
       summary: `교육 전 목표를 기준으로 돌아보면 “${achievementAnswers[0].trim()}”라는 변화가 있었습니다. 앞으로 “${achievementAnswers[1].trim()}” 부분을 더 연습하겠습니다.`,
-      mission: DEFAULT_TRANSFER_MISSION,
+      mission: missionText,
     });
   };
 
@@ -1572,8 +1665,8 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
           </div>
           <div className="survey-mission-preview">
             <span className="eyebrow">나의 현업 미션</span>
-            <h3>{course.missions.find((m) => m.participantId === participantId)?.missionText || DEFAULT_TRANSFER_MISSION}</h3>
-            <MissionElementBadges missionText={course.missions.find((m) => m.participantId === participantId)?.missionText || DEFAULT_TRANSFER_MISSION} />
+            <h3>{currentMissionText}</h3>
+            <MissionElementBadges missionText={currentMissionText} />
             <p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p>
           </div>
           <div className="likert-survey">{transferQuestions.map((question, questionIndex) => (
@@ -1590,8 +1683,9 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
           {course.missions.filter((m) => m.participantId === participantId).map((m) => {
             const checkpoints = m.missionCheckpoints || createMissionCheckpoints();
             const completed = checkpoints.filter((checkpoint) => checkpoint.status === "completed").length;
+            const displayMissionText = m.missionText && m.missionText !== DEFAULT_TRANSFER_MISSION ? m.missionText : currentMissionText;
             return <div className="mission-item" key={m.id}>
-              <span>{m.status === "done" ? "완료" : "진행 중"}</span><h3>{m.missionText}</h3><MissionElementBadges missionText={m.missionText} /><p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p><p>현업 미션 진행률 {completed}/{checkpoints.length}</p>
+              <span>{m.status === "done" ? "완료" : "진행 중"}</span><h3>{displayMissionText}</h3><MissionElementBadges missionText={displayMissionText} /><p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p><p>현업 미션 진행률 {completed}/{checkpoints.length}</p>
               <div className="checkpoint-progress"><i style={{ width: `${completed / checkpoints.length * 100}%` }} /></div>
               <div className="mission-checkpoints">{checkpoints.map((checkpoint) => <article key={checkpoint.week} className={checkpoint.status}>
                 <div><b>{checkpoint.status === "completed" ? "✓" : "□"} {checkpoint.label}</b><span>{checkpoint.status === "completed" ? "완료" : "대기"}</span></div>
