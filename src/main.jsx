@@ -112,10 +112,10 @@ const seedCourse = {
   roleplaySessions: [],
   reportTrainings: [],
   surveys: [
-    { id: "s1", participantId: "s01", likert: [4, 4, 5], barriers: ["업무시간 부족"], applied: "민원 접수 후 처리 예상 시간을 먼저 안내했습니다.", support: "상황별 보고 문장 예시가 더 필요합니다.", createdAt: "2026-08-26T01:00:00.000Z" },
+    { id: "s1", participantId: "s01", likert: [4, 4, 5, 4, 4], barriers: ["상사·동료의 지원 부족", "업무량·시간 부족"], applied: "민원 접수 후 처리 예상 시간을 먼저 안내했습니다.", support: "상사와 동료가 함께 볼 수 있는 상황별 보고 문장 예시가 더 필요합니다.", createdAt: "2026-08-26T01:00:00.000Z" },
   ],
   missions: [
-    { id: "m1", participantId: "s01", goalId: "g1", missionText: "조합원 응대 후 ‘가치 연결 메모’를 주 1회 남기기", dueDate: "2026-08-26", status: "assigned" },
+    { id: "m1", participantId: "s01", goalId: "g1", missionText: "다음 주부터 매주 금요일 팀 회의가 끝나면, 결정사항을 한 줄로 정리해 팀 공유 채널에 올린다.", dueDate: "2026-08-26", status: "assigned" },
   ],
   olympicActivityOpen: false,
 };
@@ -388,7 +388,7 @@ const storageKeys = { activeCourse: ACTIVE_COURSE_KEY, courses: COURSES_KEY };
 
 /* ---- inlined from src\services\analysisMockService.js ---- */
 function buildAnalysis(course, kind = "all") {
-  const pollItems = course.rounds.filter((round) => round.kind === "poll").flatMap((round) => round.items);
+  const pollItems = course.rounds.filter((round) => round.kind === "poll").flatMap((round) => round.items.map((item) => ({ ...item, by: round.anonymous ? "익명" : item.by, anonymous: round.anonymous })));
   const boardItems = course.rounds.filter((round) => round.kind === "board").flatMap((round) => round.items);
   const evidencePool = kind === "goals"
     ? course.goals.map((goal) => ({ quote: goal.text, by: goal.name, source: "goal" }))
@@ -497,6 +497,35 @@ function createMissionCheckpoints() {
     { week: 4, label: "4주 후 어려움 점검", status: "pending", response: "" },
     { week: 8, label: "2개월 후 현업활용도", status: "pending", response: "" },
   ];
+}
+
+const DEFAULT_TRANSFER_MISSION = "다음 주부터 매주 금요일 팀 회의가 끝나면, 결정사항을 한 줄로 정리해 팀 공유 채널에 올린다.";
+
+function missionElementSummary(missionText = DEFAULT_TRANSFER_MISSION) {
+  const text = missionText?.trim() || DEFAULT_TRANSFER_MISSION;
+  if (text.includes("매주 금요일") && text.includes("결정사항")) {
+    return {
+      when: "매주 금요일 팀 회의가 끝나면",
+      what: "결정사항을 한 줄로 정리",
+      how: "팀 공유 채널에 올린다",
+    };
+  }
+  return {
+    when: "현업에 돌아간 뒤 정한 시점에",
+    what: text.length > 28 ? `${text.slice(0, 28)}…` : text,
+    how: "작게 실행하고 결과를 기록한다",
+  };
+}
+
+function MissionElementBadges({ missionText }) {
+  const elements = missionElementSummary(missionText);
+  return (
+    <div className="mission-element-badges" aria-label="현업 미션 3요소">
+      <span><b>⏰ 언제</b>{elements.when}</span>
+      <span><b>🎯 무엇을</b>{elements.what}</span>
+      <span><b>🛠 어떻게</b>{elements.how}</span>
+    </div>
+  );
 }
 
 function buildStructuredReportFeedback(reportText, followupAnswer = "") {
@@ -1211,6 +1240,12 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
     setView("home");
   }, [phase, course.code]);
 
+  useEffect(() => {
+    if (window.location.hash === "#survey" && phase === "transfer" && !mySurvey) {
+      setView("survey");
+    }
+  }, [phase, mySurvey]);
+
   const stage = phase === "before"
     ? (!myGoal ? "goal" : "done")
     : phase === "active"
@@ -1226,7 +1261,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
     poll: { title: "강사의 실시간 질문에 답해주세요", desc: activeRound?.prompt, cta: "강사 질문에 답하기", target: "poll" },
     class: { title: "교육이 진행 중입니다", desc: "교수요원이 실시간 질문을 열면 이곳에 바로 표시됩니다." },
     achievement: { title: "배움과 목표 달성도를 돌아보세요", desc: "교육 전 목표와 연결해 수료 성찰을 남겨주세요.", cta: "목표 달성도 작성하기", target: "achievement" },
-    survey: { title: "현업 적용 경험을 알려주세요", desc: "교육이 실제 업무 행동으로 이어졌는지 확인합니다.", cta: "현업 적용도 응답하기", target: "survey" },
+    survey: { title: "현업 적용 경험을 알려주세요", desc: "현업 적용을 도운 점과 막힌 점을 모아 다음 교육과 지원을 개선합니다.", cta: "현업 적용도 응답하기", target: "survey" },
     followupWait: { title: `현업 적용도 조사는 ${getTransferDate(course)}에 열립니다`, desc: "교육 종료 후 2개월 동안 배운 내용을 현업에서 적용해보세요." },
     done: { title: "이번 단계의 응답을 완료했어요", desc: "입력한 내용은 과정 운영 데이터에 안전하게 반영됩니다." },
   }[stage];
@@ -1319,7 +1354,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
     if (!achievementAnswers[achievementStep].trim()) return notify("질문에 대한 답변을 작성해주세요.");
     setAchievementDraft({
       summary: `교육 전 목표를 기준으로 돌아보면 “${achievementAnswers[0].trim()}”라는 변화가 있었습니다. 앞으로 “${achievementAnswers[1].trim()}” 부분을 더 연습하겠습니다.`,
-      mission: achievementAnswers[2].trim(),
+      mission: DEFAULT_TRANSFER_MISSION,
     });
   };
 
@@ -1422,12 +1457,13 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
         && !(phase === "transfer" && stage === "done")
         && <StudentMissionCard mission={mission} completed={stage === "done"} onAction={mission.target ? () => setView(mission.target) : undefined} />}
       {view === "home" && ["completion", "followupWait", "transfer"].includes(phase) && (
-        <StudentReentryCard course={course} student={student} />
+        <StudentReentryCard course={course} student={student} phase={phase} onOpenSurvey={() => setView("survey")} />
       )}
       {phase !== "active" && <StudentGoalCard goal={myGoal} onWrite={() => setView("goal")} />}
       {view === "goal" && (
         <ActionPanel title="나의 목표 세우기" eyebrow="입교 전 목표">
           <p className="helper">몇 가지 질문에 답하면 AI가 ‘나의 교육 목표’로 정리해 드립니다. 이 목표는 수료 때와 교육 2개월 후 다시 확인합니다.</p>
+          <p className="theory-caption">커크패트릭 4단계 중 3단계(행동·전이)를 직접 측정합니다.</p>
           {goalDraft === null ? (
             <div className="goal-wizard">
               <div className="goal-progress">{goalQuestions.map((_, index) => <i key={index} className={index <= goalStep ? "active" : ""} />)}</div>
@@ -1458,6 +1494,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
       )}
       {view === "poll" && (
         <ActionPanel title="강사 질문에 답하기" eyebrow="실시간 참여">
+          {activeRound.anonymous && <span className="anonymous-badge">🙈 익명</span>}
           <div className="question-box">{activeRound.prompt}</div>
           {activeRound.questionType === "objective"
             ? <div className="student-choice-list">{activeRound.options.map((option) => <button key={option} className={selectedChoice === option ? "selected" : ""} onClick={() => setSelectedChoice(option)}>{option}</button>)}</div>
@@ -1499,6 +1536,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
         <ActionPanel title="수료 · 목표 달성도" eyebrow="수료일">
           <div className="linked-goal"><span>교육 전 나의 목표</span><p>{myGoal?.text}</p></div>
           <p className="helper">입교 때 세운 목표를 떠올리며 답하면 AI가 달성도를 정리하고 2주 현업 미션을 제안합니다.</p>
+          <p className="theory-caption">커크패트릭 4단계 중 3단계(행동·전이)를 직접 측정합니다.</p>
           {achievementDraft === null ? (
             <div className="goal-wizard">
               <div className="goal-progress">{achievementQuestions.map((_, index) => <i key={index} className={index <= achievementStep ? "active" : ""} />)}</div>
@@ -1518,6 +1556,8 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
               <textarea value={achievementDraft.summary} onChange={(e) => setAchievementDraft({ ...achievementDraft, summary: e.target.value })} aria-label="AI가 정리한 목표 달성도 수정" />
               <span>2주 현업 미션</span>
               <textarea value={achievementDraft.mission} onChange={(e) => setAchievementDraft({ ...achievementDraft, mission: e.target.value })} aria-label="2주 현업 미션 수정" />
+              <MissionElementBadges missionText={achievementDraft.mission} />
+              <p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p>
               <div><button className="secondary" onClick={() => setAchievementDraft(null)}>다시 답하기</button><button className="primary" onClick={saveAchievement}>성찰 저장하기</button></div>
             </div>
           )}
@@ -1525,11 +1565,21 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
       )}
       {view === "survey" && (
         <ActionPanel title="현업 적용도 응답" eyebrow="교육 2개월 후">
-          <div className="survey-notice">교육 종료일({course.endDate})로부터 2개월이 지난 {getTransferDate(course)}에 활성화된 조사입니다.</div>
+          <div className="survey-notice">
+            <b>교육은 아직 끝나지 않았습니다.</b>
+            <span>배운 것을 현업에 적용하면서 막힌 점이 있다면 알려주세요. 다음 교육과 지원을 개선하는 데 활용하겠습니다.</span>
+            <small>이 조사는 개인 평가가 아니라, 무엇이 적용을 도왔고 무엇이 막았는지를 배우기 위한 것입니다. 응답은 익명·집계로만 활용됩니다.</small>
+          </div>
+          <div className="survey-mission-preview">
+            <span className="eyebrow">나의 현업 미션</span>
+            <h3>{course.missions.find((m) => m.participantId === participantId)?.missionText || DEFAULT_TRANSFER_MISSION}</h3>
+            <MissionElementBadges missionText={course.missions.find((m) => m.participantId === participantId)?.missionText || DEFAULT_TRANSFER_MISSION} />
+            <p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p>
+          </div>
           <div className="likert-survey">{transferQuestions.map((question, questionIndex) => (
             <div key={question}><b>{questionIndex + 1}. {question}</b><div>{["전혀 아니다", "아니다", "보통", "그렇다", "매우 그렇다"].map((label, optionIndex) => <button key={label} className={survey.likert[questionIndex] === optionIndex + 1 ? "selected" : ""} onClick={() => setSurvey({ ...survey, likert: survey.likert.map((value, index) => index === questionIndex ? optionIndex + 1 : value) })}>{label}</button>)}</div></div>
           ))}</div>
-          <div className="barrier-field"><b>6. 현업 적용을 어렵게 한 요인 (복수 선택)</b><div>{transferBarriers.map((barrier) => <button key={barrier} className={survey.barriers.includes(barrier) ? "selected" : ""} onClick={() => setSurvey({ ...survey, barriers: survey.barriers.includes(barrier) ? survey.barriers.filter((item) => item !== barrier) : [...survey.barriers, barrier] })}>{barrier}</button>)}</div></div>
+          <div className="barrier-field"><b>6. 현업 적용을 어렵게 한 요인 (복수 선택)</b><p className="theory-caption">전이이론(Baldwin & Ford, 1988)의 업무환경 요인 진단 문항입니다.</p><div>{transferBarriers.map((barrier) => <button key={barrier} className={survey.barriers.includes(barrier) ? "selected" : ""} onClick={() => setSurvey({ ...survey, barriers: survey.barriers.includes(barrier) ? survey.barriers.filter((item) => item !== barrier) : [...survey.barriers, barrier] })}>{barrier}</button>)}</div></div>
           <label className="field"><span>7. 배운 것 중 실제로 업무에 적용한 구체적인 사례를 적어 주세요.</span><textarea value={survey.applied} onChange={(e) => setSurvey({ ...survey, applied: e.target.value })} placeholder="예: 보고 두괄식을 매일 적용 중입니다." /></label>
           <label className="field"><span>8. 적용하면서 겪은 어려움이나 조직에 바라는 지원을 적어 주세요.</span><textarea value={survey.support} onChange={(e) => setSurvey({ ...survey, support: e.target.value })} placeholder="예: 실제 사례로 더 연습할 기회가 필요해요." /></label>
           <PanelActions onBack={() => setView("home")} onSave={saveSurvey} saveLabel="응답 완료하기" />
@@ -1541,7 +1591,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
             const checkpoints = m.missionCheckpoints || createMissionCheckpoints();
             const completed = checkpoints.filter((checkpoint) => checkpoint.status === "completed").length;
             return <div className="mission-item" key={m.id}>
-              <span>{m.status === "done" ? "완료" : "진행 중"}</span><h3>{m.missionText}</h3><p>현업 미션 진행률 {completed}/{checkpoints.length}</p>
+              <span>{m.status === "done" ? "완료" : "진행 중"}</span><h3>{m.missionText}</h3><MissionElementBadges missionText={m.missionText} /><p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p><p>현업 미션 진행률 {completed}/{checkpoints.length}</p>
               <div className="checkpoint-progress"><i style={{ width: `${completed / checkpoints.length * 100}%` }} /></div>
               <div className="mission-checkpoints">{checkpoints.map((checkpoint) => <article key={checkpoint.week} className={checkpoint.status}>
                 <div><b>{checkpoint.status === "completed" ? "✓" : "□"} {checkpoint.label}</b><span>{checkpoint.status === "completed" ? "완료" : "대기"}</span></div>
@@ -1768,7 +1818,7 @@ function StudentMissionCard({ mission, completed, onAction }) {
   );
 }
 
-function StudentReentryCard({ course, student }) {
+function StudentReentryCard({ course, student, phase, onOpenSurvey }) {
   if (!student?.participantCode && !student?.reentryToken) return null;
   return (
     <section className="reentry-card">
@@ -1776,8 +1826,12 @@ function StudentReentryCard({ course, student }) {
         <span className="eyebrow">2개월 후 현업활용도 조사 안내</span>
         <h3>알림으로 다시 안내됩니다</h3>
         <p>향후 알림 기능이 연결되면, 교육 종료 2개월 후 과정코드와 접속 링크가 함께 안내됩니다.</p>
+        <p className="demo-compression-note">실제 서비스에서는 교육종료일 +2개월에 예약 발송됩니다. 본 화면은 시연을 위해 10초로 압축한 데모입니다.</p>
         <p>현재 화면의 정보는 확인용입니다. 별도로 외우거나 저장하지 않아도 됩니다.</p>
         <small>과정코드: {course.code} · 이름: {student.name || student.studentName}</small>
+        {phase === "transfer" && (
+          <button className="secondary compact followup-demo-link" onClick={onOpenSurvey}>현업활용도 조사로 이동</button>
+        )}
       </div>
     </section>
   );
@@ -1926,17 +1980,48 @@ function JobChoiceField({ number, title, options, value, onChange }) {
   return <fieldset className="job-choice-field"><legend>{number}. {title}</legend><div>{options.map((option) => <button type="button" key={option.value} className={value === option.value ? "selected" : ""} onClick={() => onChange(option.value)}>{option.label}</button>)}</div></fieldset>;
 }
 
+function resizeImageFile(file, maxSize = 1280, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("이미지를 읽지 못했습니다."));
+    reader.onload = () => {
+      const originalDataUrl = reader.result;
+      const image = new Image();
+      image.onerror = () => reject(new Error("이미지를 불러오지 못했습니다."));
+      image.onload = () => {
+        try {
+          const { naturalWidth: width, naturalHeight: height } = image;
+          if (!width || !height) return reject(new Error("이미지 크기를 확인하지 못했습니다."));
+          if (Math.max(width, height) <= maxSize) return resolve(originalDataUrl);
+          const ratio = maxSize / Math.max(width, height);
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.round(width * ratio);
+          canvas.height = Math.round(height * ratio);
+          const context = canvas.getContext("2d");
+          if (!context) return reject(new Error("이미지 변환을 준비하지 못했습니다."));
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        } catch (error) {
+          reject(error);
+        }
+      };
+      image.src = originalDataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function StudentBoardArea({ rounds, setCourse, student, notify }) {
   const participantId = student?.id || "student-demo";
   const classId = student?.classId || "class-1";
   const className = student?.className || "1반";
   const [teamNames, setTeamNames] = useState({});
-  const upload = (round, file) => {
+  const upload = async (round, file) => {
     if (!file) return;
     const team = (teamNames[round.id] || "").trim();
     if (!team) return notify("팀명을 먼저 입력해주세요.");
-    const reader = new FileReader();
-    reader.onload = () => {
+    try {
+      const imageUrl = await resizeImageFile(file);
       setCourse((current) => ({
         ...current,
         rounds: current.rounds.map((item) => item.id === round.id ? {
@@ -1947,7 +2032,7 @@ function StudentBoardArea({ rounds, setCourse, student, notify }) {
             by: team,
             classId,
             className,
-            imageUrl: reader.result,
+            imageUrl,
             text: `${team} 장표 업로드`,
             reactions: {},
             createdAt: now(),
@@ -1955,8 +2040,9 @@ function StudentBoardArea({ rounds, setCourse, student, notify }) {
         } : item),
       }));
       notify(`${round.prompt}에 ${team} 장표를 업로드했습니다.`);
-    };
-    reader.readAsDataURL(file);
+    } catch {
+      notify("이미지 저장 중 문제가 발생했습니다. 사진 크기를 줄이거나 다시 선택해주세요.");
+    }
   };
   if (!rounds.length) return null;
   return (
@@ -1993,7 +2079,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
   const [selectedScenario, setSelectedScenario] = useState(course.roleplayConfig?.scenario || "민원 발생 보고");
   const [difficulty, setDifficulty] = useState(course.roleplayConfig?.difficulty || "보통");
   const [pushStatus, setPushStatus] = useState("idle");
-  const [questionDraft, setQuestionDraft] = useState({ type: "subjective", intent: "general", prompt: "", options: ["", ""] });
+  const [questionDraft, setQuestionDraft] = useState({ type: "subjective", intent: "general", prompt: "", options: ["", ""], anonymous: false });
   const [boardModule, setBoardModule] = useState({ title: "" });
   const [selectedBoardRound, setSelectedBoardRound] = useState("");
   const [expandedBoard, setExpandedBoard] = useState(null);
@@ -2060,6 +2146,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
         questionIntent: questionDraft.intent,
         prompt: questionDraft.prompt.trim(),
         options: questionDraft.type === "objective" ? options : [],
+        anonymous: questionDraft.anonymous === true,
         courseId: c.code,
         scope: "class",
         classId: selectedClass.id,
@@ -2068,7 +2155,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
         createdAt: now(),
       }],
     }));
-    setQuestionDraft({ type: "subjective", intent: "general", prompt: "", options: ["", ""] });
+    setQuestionDraft({ type: "subjective", intent: "general", prompt: "", options: ["", ""], anonymous: false });
     notify(`${selectedClass.name} 교육생에게 실시간 질문을 열었습니다.`);
   };
 
@@ -2125,6 +2212,14 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
     setPushStatus("waiting");
     pushTimer.current = setTimeout(() => setPushStatus("arrived"), 10000);
     notify("10초 뒤 사후조사 알림이 도착합니다.");
+  };
+
+  const openFollowupSurveyDemo = () => {
+    const participant = (course.participants || [])[0];
+    const followupUrl = participant?.reentryToken
+      ? `${personalFollowupLink(participant.reentryToken)}#survey`
+      : `/?role=student&code=${encodeURIComponent(course.code)}#survey`;
+    window.location.href = followupUrl;
   };
 
   const registerCourse = () => {
@@ -2268,6 +2363,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
             <div className="transfer-stats"><Stat label="수료 성찰" value={`${filteredCourse.achievements.length}/${filteredParticipantCount}`} /><Stat label="현업활용도 응답" value={`${filteredCourse.surveys.length}/${filteredParticipantCount}`} /><Stat label="평균 적용도" value={`${averageLikert(filteredCourse.surveys)}점`} /></div>
             <ClassSubmissionSummary course={course} />
             <TransferReportSummary course={filteredCourse} participantCount={filteredParticipantCount} />
+            <FollowupPushDemo status={pushStatus} onStart={startPushDemo} onOpen={openFollowupSurveyDemo} />
             <div className="export-row">
               <div><h3>과정 성과 리포트</h3><p>목표·참여·성찰·현업 적용 데이터를 한 번에 내보냅니다.</p></div>
               <div><button className="secondary" onClick={() => downloadReport(course, "json", "all")}>전체 JSON</button><button className="secondary" onClick={() => downloadReport(course, "csv", "all")}>전체 CSV</button><button className="secondary" onClick={() => downloadReport(course, "json", selectedClassFilter)}>{selectedClass.name} JSON</button><button className="primary" onClick={() => downloadReport(course, "csv", selectedClassFilter)}>{selectedClass.name} CSV</button></div>
@@ -2327,11 +2423,41 @@ function ProfessorDashboard({ course, onNavigate, onAnalyze }) {
   );
 }
 
+function FollowupPushDemo({ status, onStart, onOpen }) {
+  return (
+    <section className="followup-push-demo">
+      <div>
+        <span className="eyebrow">사후조사 알림 데모</span>
+        <h3>현업활용도 조사 알림 시연</h3>
+        <p className="demo-compression-note">실제 서비스에서는 교육종료일 +2개월에 예약 발송됩니다. 본 화면은 시연을 위해 10초로 압축한 데모입니다.</p>
+      </div>
+      <div className="followup-demo-actions">
+        <button className="secondary compact" onClick={onStart}>{status === "waiting" ? "알림 대기 중" : "10초 데모 시작"}</button>
+        {status === "arrived" && (
+          <button className="primary compact followup-notification-card" onClick={onOpen}>
+            [NH 농심튜터] 현업활용도 조사 알림 도착 · 클릭해서 설문 열기
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function TransferReportSummary({ course, participantCount }) {
   const surveys = course.surveys || [];
   const achievements = course.achievements || [];
   const appliedTexts = surveys.map((item) => item.applied).filter(Boolean).slice(0, 3);
   const supportTexts = surveys.map((item) => item.support).filter(Boolean).slice(0, 3);
+  const barrierCounts = surveys.reduce((acc, survey) => {
+    (survey.barriers || []).forEach((barrier) => {
+      acc[barrier] = (acc[barrier] || 0) + 1;
+    });
+    return acc;
+  }, {});
+  const topBarriers = Object.entries(barrierCounts).sort((a, b) => b[1] - a[1]);
+  const supportBarrierRatio = surveys.length ? (barrierCounts["상사·동료의 지원 부족"] || 0) / surveys.length : 0;
+  const bestCase = surveys.find((item) => item.applied)?.applied || "아직 구체적인 적용 사례가 충분히 수집되지 않았습니다.";
+  const blockedCase = surveys.find((item) => item.support)?.support || topBarriers[0]?.[0] || "아직 적용을 막은 요인이 충분히 수집되지 않았습니다.";
   if (!surveys.length) {
     return (
       <section className="transfer-report-summary">
@@ -2345,8 +2471,12 @@ function TransferReportSummary({ course, participantCount }) {
         <div className="ai-symbol">AI</div>
         <div>
           <div className="summary-head"><span>전이 리포트 요약</span><ReviewBadge /></div>
-          <p>현업활용도 응답은 {surveys.length}/{participantCount}명 제출되었습니다. 평균 적용도는 {averageLikert(surveys)}점이며, 수료 성찰 {achievements.length}건과 함께 과정 개선 참고자료로 활용할 수 있습니다.</p>
+          <p>현업활용도 응답은 {surveys.length}/{participantCount}명 제출되었습니다. 평균 적용도는 {averageLikert(surveys)}점이며, 개인 평가가 아니라 다음 교육과 현업 지원을 개선하기 위한 집계 참고자료로 활용합니다.</p>
         </div>
+      </div>
+      <div className="transfer-case-grid">
+        <article><h3>✅ 가장 잘 적용된 사례</h3><p>“{bestCase}”</p></article>
+        <article><h3>⛔ 가장 막힌 사례</h3><p>“{blockedCase}”</p></article>
       </div>
       <div className="transfer-insight-grid">
         <article>
@@ -2358,6 +2488,16 @@ function TransferReportSummary({ course, participantCount }) {
           {supportTexts.length ? supportTexts.map((text, index) => <p key={index}>“{text}”</p>) : <p>추가 지원 요구가 수집되면 이곳에 표시됩니다.</p>}
         </article>
       </div>
+      <div className="barrier-summary">
+        <h3>장애요인 빈도</h3>
+        {topBarriers.length ? topBarriers.map(([barrier, count]) => <div key={barrier}><span>{barrier}</span><b>{count}명</b></div>) : <p>아직 장애요인 응답이 없습니다.</p>}
+      </div>
+      {supportBarrierRatio >= 0.3 && (
+        <div className="manager-action-warning">
+          ⚠ 적용 장애의 상당수가 '환경(상사·동료 지원)'에 있습니다. 교육 추가보다 관리자 대상 안내·지원이 효과적일 수 있습니다.
+        </div>
+      )}
+      <p className="transfer-report-footnote">※ 행동 변화에는 교육 외 요인(상사 지원, 업무 환경 등)이 함께 작용할 수 있어, 본 리포트는 성과의 인과를 단정하지 않습니다.</p>
     </section>
   );
 }
@@ -2618,6 +2758,10 @@ function QuestionComposer({ value, onChange, onSubmit }) {
         <button className={value.type === "objective" ? "selected" : ""} onClick={() => onChange({ ...value, type: "objective" })}>객관식</button>
       </div>
       <textarea value={value.prompt} onChange={(e) => onChange({ ...value, prompt: e.target.value })} placeholder="교육생에게 실시간으로 제시할 질문을 입력하세요." aria-label="실시간 질문 내용 입력" />
+      <label className="anonymous-toggle">
+        <input type="checkbox" checked={value.anonymous === true} onChange={(e) => onChange({ ...value, anonymous: e.target.checked })} />
+        <span>🙈 익명으로 받기</span>
+      </label>
       {value.type === "objective" && (
         <div className="option-editor">
           {value.options.map((option, index) => <input key={index} value={option} onChange={(e) => updateOption(index, e.target.value)} placeholder={`답변 항목 ${index + 1}`} aria-label={`객관식 답변 항목 ${index + 1}`} />)}
@@ -2777,7 +2921,7 @@ function ProfessorBoardGallery({ rounds, selectedId, onSelect, onExpand, onAnaly
         <details className="mobile-details board-list-details"><summary>팀 장표 {selected.items.length}개 보기</summary><div className="board-card-grid">
           {selected.items.map((item) => (
             <article key={item.id}>
-              <button className="board-image-button" onClick={() => onExpand(item)}>
+              <button className="board-image-button" onClick={() => onExpand(item)} aria-label={`${item.by} 팀 장표 전체화면으로 보기`}>
                 {item.imageUrl ? <img src={item.imageUrl} alt={`${item.by} 장표`} /> : <div>이미지 없음</div>}
                 <span>전체화면 발표 ↗</span>
               </button>
@@ -2801,13 +2945,15 @@ function ProfessorBoardGallery({ rounds, selectedId, onSelect, onExpand, onAnaly
 function BoardLightbox({ item, onClose }) {
   return (
     <div className="board-lightbox" onClick={onClose}>
-      <button onClick={onClose}>× 닫기</button>
+      <button onClick={onClose} aria-label="장표 전체화면 닫기">× 닫기</button>
       <div><h2>{item.by} 팀 장표</h2>{item.imageUrl && <img src={item.imageUrl} alt={`${item.by} 장표 전체화면`} />}</div>
     </div>
   );
 }
 
 function RoundView({ round, onReact }) {
+  const participantLabel = (item) => round.anonymous ? "익명" : item.by;
+  const typeBadge = round.anonymous ? " · 🙈 익명" : "";
   if (round.questionType === "objective") {
     const counts = (round.options || []).map((option) => ({
       option,
@@ -2818,7 +2964,7 @@ function RoundView({ round, onReact }) {
     const questionTypeLabel = "객관식";
     return (
       <div className="round objective-round">
-        <div className="round-title"><span>{questionTypeLabel}{round.scope === "class" ? ` · ${round.classId?.replace("class-", "")}반` : " · 전체 반"}</span><h3>{round.prompt}</h3><b>응답 {round.items.length}명</b></div>
+        <div className="round-title"><span>{questionTypeLabel}{round.scope === "class" ? ` · ${round.classId?.replace("class-", "")}반` : " · 전체 반"}{typeBadge}</span><h3>{round.prompt}</h3><b>응답 {round.items.length}명</b></div>
         <details className="mobile-details"><summary>전체 응답과 분석 보기</summary>
         <div className="choice-results">{counts.map((item) => <div key={item.option}><div><span>{item.option}</span><b>{item.count}명</b></div><i><em style={{ width: `${item.count / max * 100}%` }} /></i></div>)}</div>
         <div className="question-diagnosis">
@@ -2834,14 +2980,14 @@ function RoundView({ round, onReact }) {
   const questionTypeLabel = "주관식";
   return (
     <div className="round">
-      <div className="round-title"><span>{questionTypeLabel}{round.scope === "class" ? ` · ${round.classId?.replace("class-", "")}반` : " · 전체 반"}</span><h3>{round.prompt}</h3><b>응답 {round.items.length}명</b></div>
+      <div className="round-title"><span>{questionTypeLabel}{round.scope === "class" ? ` · ${round.classId?.replace("class-", "")}반` : " · 전체 반"}{typeBadge}</span><h3>{round.prompt}</h3><b>응답 {round.items.length}명</b></div>
       <details className="mobile-details"><summary>전체 응답 {round.items.length}건 보기</summary>
       <div className="response-wall-head"><b>전체 답변판</b><span>최대 30명의 답변을 한 화면에서 함께 봅니다.</span></div>
       <div className="response-wall">{visibleItems.map((item, index) => (
         <article className="response-wall-item" key={item.id}>
-          <div className="response-meta"><b>{item.by}</b><span>{new Date(item.createdAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</span>{index === 0 && reactionScore(item) > 0 && <em>공감 1위</em>}</div>
+          <div className="response-meta"><b>{participantLabel(item)}</b><span>{new Date(item.createdAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</span>{index === 0 && reactionScore(item) > 0 && <em>공감 1위</em>}</div>
           <p>{item.text}</p>
-          <button className="like-button" onClick={() => onReact(round.id, item.id, "agree")} aria-label={`${item.by} 답변에 공감`}>
+          <button className="like-button" onClick={() => onReact(round.id, item.id, "agree")} aria-label={`${participantLabel(item)} 답변에 공감`}>
             <span>👍</span> 공감 <b>{item.reactions?.agree || 0}</b>
           </button>
         </article>
