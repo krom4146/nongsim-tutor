@@ -201,6 +201,20 @@ function averageLikert(surveys) {
 /* ---- inlined from src\services\classManagementService.js ---- */
 const DEFAULT_CLASS_ID = "class-1";
 const DEFAULT_CLASS_NAME = "1반";
+const STORAGE_WARNING_MESSAGE = "저장 공간이 가득 찼습니다. 오래된 장표 이미지를 정리하거나 새 과정으로 시작해 주세요.";
+
+function safeSetItem(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    console.warn("localStorage 저장 실패:", error);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("nongsim-storage-warning", { detail: { message: STORAGE_WARNING_MESSAGE } }));
+    }
+    return false;
+  }
+}
 
 function createClasses(classCount = 1) {
   const safeCount = Math.min(4, Math.max(1, Number(classCount) || 1));
@@ -364,7 +378,7 @@ function loadActiveCourse() {
 }
 
 function saveActiveCourse(course) {
-  localStorage.setItem(ACTIVE_COURSE_KEY, JSON.stringify(course));
+  safeSetItem(ACTIVE_COURSE_KEY, JSON.stringify(course));
 }
 
 function loadCourses() {
@@ -381,7 +395,7 @@ function loadCourses() {
 }
 
 function saveCourses(courses) {
-  localStorage.setItem(COURSES_KEY, JSON.stringify(courses));
+  safeSetItem(COURSES_KEY, JSON.stringify(courses));
 }
 
 const storageKeys = { activeCourse: ACTIVE_COURSE_KEY, courses: COURSES_KEY };
@@ -644,8 +658,34 @@ function createFollowupQuestions(scenario, difficulty) {
 }
 
 /* ---- inlined from src\services\reportService.js ---- */
+function anonymizeSurveyResponses(surveys = []) {
+  return (surveys || []).map((survey, index) => ({
+    id: survey.id,
+    label: `응답자 ${index + 1}`,
+    classId: survey.classId || DEFAULT_CLASS_ID,
+    className: survey.className || DEFAULT_CLASS_NAME,
+    likert: survey.likert || [],
+    barriers: survey.barriers || [],
+    applied: survey.applied || "",
+    support: survey.support || "",
+    submittedAt: survey.submittedAt || survey.createdAt || "",
+  }));
+}
+
+function surveySubmissionStatus(course, classId = "all") {
+  const submittedIds = new Set((course.surveys || []).filter((item) => matchesClass(item, classId)).map((item) => item.participantId));
+  return collectCourseStudents(course)
+    .filter((student) => matchesClass(student, classId))
+    .map((student) => ({
+      name: student.name || student.studentName || "이름 없음",
+      className: student.className || DEFAULT_CLASS_NAME,
+      submitted: submittedIds.has(student.participantId || student.id),
+    }));
+}
+
 function reportData(course, classId = "all") {
   const filtered = filterCourseByClass(course, classId);
+  const anonymousSurveys = anonymizeSurveyResponses(filtered.surveys);
   const classSummaries = (course.classes || []).map((classInfo) => {
     const classCourse = filterCourseByClass(course, classInfo.id);
     return {
@@ -671,7 +711,8 @@ function reportData(course, classId = "all") {
     transferAfterTwoMonths: {
       submitted: filtered.surveys.length,
       averageLikert: averageLikert(filtered.surveys),
-      responses: filtered.surveys,
+      responses: anonymousSurveys,
+      submissionStatus: surveySubmissionStatus(course, classId),
       missions: filtered.missions,
       missionCheckpoints: filtered.missions.flatMap((mission) => mission.missionCheckpoints || []),
     },
@@ -692,10 +733,16 @@ function downloadReport(course, format, classId = "all") {
     type = "application/json;charset=utf-8";
     ext = "json";
   } else {
+    const anonymousSurveys = anonymizeSurveyResponses(filtered.surveys).map((item) => ({
+      ...item,
+      studentName: item.label,
+      responseType: "survey",
+      createdAt: item.submittedAt,
+    }));
     const responseRows = [
       ...filtered.goals.map((item) => ({ ...item, studentName: item.name, responseType: "goal" })),
       ...filtered.achievements.map((item) => ({ ...item, studentName: item.name, responseType: "achievement" })),
-      ...filtered.surveys.map((item) => ({ ...item, studentName: item.name, responseType: "survey" })),
+      ...anonymousSurveys,
       ...filtered.jobReflections.map((item) => ({ ...item, responseType: "jobReflection" })),
       ...filtered.reportTrainings.map((item) => ({ ...item, studentName: item.name, responseType: "reportTraining" })),
       ...filtered.rounds.flatMap((round) => round.items.map((item) => ({ ...item, studentName: item.by, responseType: round.kind }))),
@@ -829,7 +876,7 @@ function loadIdeologyStamps() {
 }
 
 function saveIdeologyStamps(items) {
-  localStorage.setItem(STAMP_KEY, JSON.stringify(items));
+  safeSetItem(STAMP_KEY, JSON.stringify(items));
 }
 
 function stampCounts(items, participantId, studentName) {
@@ -877,7 +924,7 @@ function loadStoredStudentProfiles() {
 
 function rememberStudentProfile(profile) {
   const profiles = loadStoredStudentProfiles().filter((item) => item.courseCode !== profile.courseCode || item.participantId !== profile.participantId);
-  localStorage.setItem(STUDENT_PROFILE_KEY, JSON.stringify([...profiles, profile]));
+  safeSetItem(STUDENT_PROFILE_KEY, JSON.stringify([...profiles, profile]));
 }
 
 function App() {
@@ -953,6 +1000,12 @@ function App() {
     const timer = setTimeout(() => setToast(""), 2600);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    const showStorageWarning = (event) => setToast(event.detail?.message || STORAGE_WARNING_MESSAGE);
+    window.addEventListener("nongsim-storage-warning", showStorageWarning);
+    return () => window.removeEventListener("nongsim-storage-warning", showStorageWarning);
+  }, []);
 
   useEffect(() => {
     const token = followupTokenFromLocation();
@@ -1456,7 +1509,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
     if (!survey.applied.trim() || !survey.support.trim()) return notify("현업 적용 사례와 필요한 지원을 모두 작성해주세요.");
     setCourse((c) => ({
       ...c,
-      surveys: [...c.surveys, { id: uid("survey"), participantId, name: participantName, classId, className, ...survey, createdAt: now() }],
+      surveys: [...c.surveys, { id: uid("survey"), participantId, classId, className, ...survey, submittedAt: now(), createdAt: now() }],
       missions: c.missions.map((mission) => mission.participantId === participantId ? {
         ...mission,
         missionCheckpoints: (mission.missionCheckpoints || createMissionCheckpoints()).map((checkpoint) => checkpoint.week === 8 ? { ...checkpoint, status: "completed", response: "현업활용도 제출 완료" } : checkpoint),
@@ -1661,7 +1714,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
           <div className="survey-notice">
             <b>교육은 아직 끝나지 않았습니다.</b>
             <span>배운 것을 현업에 적용하면서 막힌 점이 있다면 알려주세요. 다음 교육과 지원을 개선하는 데 활용하겠습니다.</span>
-            <small>이 조사는 개인 평가가 아니라, 무엇이 적용을 도왔고 무엇이 막았는지를 배우기 위한 것입니다. 응답은 익명·집계로만 활용됩니다.</small>
+            <small>이 조사는 개인 평가가 아니라, 무엇이 적용을 도왔고 무엇이 막았는지를 배우기 위한 것입니다. 응답 내용은 교수요원에게 실명으로 공개되지 않으며, 분석·보고에는 익명·집계 형태로만 활용됩니다. 단, 재안내와 중복 응답 방지를 위해 제출 여부는 시스템에서 확인될 수 있습니다.</small>
           </div>
           <div className="survey-mission-preview">
             <span className="eyebrow">나의 현업 미션</span>
@@ -1920,6 +1973,7 @@ function StudentReentryCard({ course, student, phase, onOpenSurvey }) {
         <span className="eyebrow">2개월 후 현업활용도 조사 안내</span>
         <h3>알림으로 다시 안내됩니다</h3>
         <p>향후 알림 기능이 연결되면, 교육 종료 2개월 후 과정코드와 접속 링크가 함께 안내됩니다.</p>
+        <p>응답 내용은 실명으로 공개되지 않으며, 제출 여부만 재안내와 중복 응답 방지를 위해 확인될 수 있습니다.</p>
         <p className="demo-compression-note">실제 서비스에서는 교육종료일 +2개월에 예약 발송됩니다. 본 화면은 시연을 위해 10초로 압축한 데모입니다.</p>
         <p>현재 화면의 정보는 확인용입니다. 별도로 외우거나 저장하지 않아도 됩니다.</p>
         <small>과정코드: {course.code} · 이름: {student.name || student.studentName}</small>
@@ -2524,6 +2578,7 @@ function FollowupPushDemo({ status, onStart, onOpen }) {
         <span className="eyebrow">사후조사 알림 데모</span>
         <h3>현업활용도 조사 알림 시연</h3>
         <p className="demo-compression-note">실제 서비스에서는 교육종료일 +2개월에 예약 발송됩니다. 본 화면은 시연을 위해 10초로 압축한 데모입니다.</p>
+        <p className="demo-compression-note">응답 내용은 실명으로 공개되지 않고, 제출 여부만 재안내와 중복 응답 방지를 위해 확인됩니다.</p>
       </div>
       <div className="followup-demo-actions">
         <button className="secondary compact" onClick={onStart}>{status === "waiting" ? "알림 대기 중" : "10초 데모 시작"}</button>
@@ -2540,8 +2595,9 @@ function FollowupPushDemo({ status, onStart, onOpen }) {
 function TransferReportSummary({ course, participantCount }) {
   const surveys = course.surveys || [];
   const achievements = course.achievements || [];
-  const appliedTexts = surveys.map((item) => item.applied).filter(Boolean).slice(0, 3);
-  const supportTexts = surveys.map((item) => item.support).filter(Boolean).slice(0, 3);
+  const anonymousSurveys = anonymizeSurveyResponses(surveys);
+  const appliedTexts = anonymousSurveys.filter((item) => item.applied).slice(0, 3);
+  const supportTexts = anonymousSurveys.filter((item) => item.support).slice(0, 3);
   const barrierCounts = surveys.reduce((acc, survey) => {
     (survey.barriers || []).forEach((barrier) => {
       acc[barrier] = (acc[barrier] || 0) + 1;
@@ -2550,8 +2606,16 @@ function TransferReportSummary({ course, participantCount }) {
   }, {});
   const topBarriers = Object.entries(barrierCounts).sort((a, b) => b[1] - a[1]);
   const supportBarrierRatio = surveys.length ? (barrierCounts["상사·동료의 지원 부족"] || 0) / surveys.length : 0;
-  const bestCase = surveys.find((item) => item.applied)?.applied || "아직 구체적인 적용 사례가 충분히 수집되지 않았습니다.";
-  const blockedCase = surveys.find((item) => item.support)?.support || topBarriers[0]?.[0] || "아직 적용을 막은 요인이 충분히 수집되지 않았습니다.";
+  const likertSum = (survey) => (survey.likert || []).reduce((sum, value) => sum + (Number(value) || 0), 0);
+  const withApplied = surveys.filter((item) => (item.applied || "").trim());
+  const withSupport = surveys.filter((item) => (item.support || "").trim());
+  // 8월 API 연동 시: 사례 선정을 AI 응답 스키마(successCase/blockedCase)로 대체
+  const bestCase = withApplied.length
+    ? [...withApplied].sort((a, b) => likertSum(b) - likertSum(a))[0].applied
+    : "아직 구체적인 적용 사례가 충분히 수집되지 않았습니다.";
+  const blockedCase = withSupport.length
+    ? [...withSupport].sort((a, b) => likertSum(a) - likertSum(b))[0].support
+    : topBarriers[0]?.[0] || "아직 적용을 막은 요인이 충분히 수집되지 않았습니다.";
   if (!surveys.length) {
     return (
       <section className="transfer-report-summary">
@@ -2575,11 +2639,11 @@ function TransferReportSummary({ course, participantCount }) {
       <div className="transfer-insight-grid">
         <article>
           <h3>현업 적용 응답 요약</h3>
-          {appliedTexts.length ? appliedTexts.map((text, index) => <p key={index}>“{text}”</p>) : <p>아직 구체적인 현업 적용 사례가 없습니다.</p>}
+          {appliedTexts.length ? appliedTexts.map((item) => <p key={item.label}><b>{item.label}</b> “{item.applied}”</p>) : <p>아직 구체적인 현업 적용 사례가 없습니다.</p>}
         </article>
         <article>
           <h3>과정 개선 포인트</h3>
-          {supportTexts.length ? supportTexts.map((text, index) => <p key={index}>“{text}”</p>) : <p>추가 지원 요구가 수집되면 이곳에 표시됩니다.</p>}
+          {supportTexts.length ? supportTexts.map((item) => <p key={item.label}><b>{item.label}</b> “{item.support}”</p>) : <p>추가 지원 요구가 수집되면 이곳에 표시됩니다.</p>}
         </article>
       </div>
       <div className="barrier-summary">
