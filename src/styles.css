@@ -33,6 +33,138 @@
   --cream-text: #e7e2d2;
   --cta-text: #1c3320;
 }
+
+/* Final UX pass: phase-aware states, honest empty states and readable history */
+.student-phase-tabs button.current {
+  border-color: var(--green);
+  background: var(--mint);
+  box-shadow: 0 7px 18px rgba(0,154,68,.1);
+}
+.student-phase-tabs button.current > span { color: var(--green); }
+.student-phase-tabs button.review {
+  border-color: rgba(134,154,88,.42);
+  background: #fbfaf3;
+  cursor: pointer;
+}
+.student-phase-tabs button.review > span { color: var(--olive-deep); }
+.student-phase-tabs button:disabled { cursor: not-allowed; }
+
+.stage-review-notice,
+.professor-readonly-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 13px 15px;
+  border: 1px solid rgba(138,154,91,.28);
+  border-radius: 14px;
+  background: rgba(194,210,140,.12);
+  color: var(--deep);
+}
+.stage-review-notice b,
+.professor-readonly-notice b { flex: 0 0 auto; color: var(--olive-deep); }
+.stage-review-notice span,
+.professor-readonly-notice span { color: var(--muted); line-height: 1.55; }
+.stage-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 12px;
+  margin: 14px 0 18px;
+}
+.stage-review-grid > article,
+.stage-review-grid > .stat {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+.stage-review-grid > article span { color: var(--muted); font-size: 12px; font-weight: 800; }
+.stage-review-grid > article p { margin: 8px 0 0; color: var(--deep); line-height: 1.65; overflow-wrap: anywhere; }
+.goal-locked-status {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(138,154,130,.12);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.analysis-readiness-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 22px;
+  border: 1px solid rgba(150,170,140,.24);
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(31,58,41,.07);
+}
+.analysis-readiness-card h2 { margin: 4px 0 8px; color: var(--deep); }
+.analysis-readiness-card p { margin: 0 0 8px; color: var(--muted); line-height: 1.6; }
+.analysis-readiness-card small { color: var(--sage-soft); }
+.ai-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.ai-result-meta span,
+.ai-result-meta b {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--mint);
+  color: var(--deep);
+}
+.ai-result-meta time { margin-left: auto; }
+
+.overall-summary-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.enrollment-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: #f4f3ea;
+  color: var(--muted);
+  font-size: 11px;
+}
+.enrollment-summary b { color: var(--deep); font-size: 16px; }
+.enrollment-summary small { padding-left: 8px; border-left: 1px solid var(--line); }
+
+.prof-nav { scroll-snap-type: x proximity; scroll-padding-inline: 16px; }
+.prof-nav button { scroll-snap-align: center; }
+.prof-nav button[aria-selected="true"] { outline-offset: 2px; }
+
+button:disabled,
+.primary:disabled,
+.secondary:disabled {
+  opacity: .48;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+@media (max-width: 640px) {
+  .stage-review-notice,
+  .professor-readonly-notice { flex-direction: column; gap: 4px; }
+  .stage-review-grid,
+  .stage-review-grid.compact { grid-template-columns: 1fr; }
+  .overall-summary-head { flex-direction: column; }
+  .enrollment-summary { width: 100%; flex-wrap: wrap; }
+  .ai-result-meta time { width: 100%; margin-left: 0; }
+  .analysis-readiness-card { padding: 18px; }
+}
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { width: 100%; min-height: 100%; overflow-x: hidden; }
 body { margin: 0; min-width: 320px; min-height: 100vh; min-height: 100dvh; background: radial-gradient(circle at 8% 0%, rgba(201,228,207,.68), transparent 30%), linear-gradient(180deg, #f8faf6, #f1f5ef); }

@@ -195,7 +195,29 @@ function sourceLabel(source) {
 
 function averageLikert(surveys) {
   const values = surveys.flatMap((survey) => survey.likert || []);
-  return values.length ? (values.reduce((a, b) => a + b, 0) / values.length).toFixed(1) : "0.0";
+  return values.length ? (values.reduce((a, b) => a + b, 0) / values.length).toFixed(1) : null;
+}
+
+function formatAverageLikert(surveys) {
+  const average = averageLikert(surveys);
+  return average === null ? "응답 없음" : `${average}점`;
+}
+
+function formatSubmissionCount(submitted, registered) {
+  return registered > 0 ? `${submitted}/${registered}명` : `${submitted}명`;
+}
+
+function analysisEvidenceCount(course) {
+  const roundResponses = (course.rounds || []).reduce((sum, round) => sum + (round.items || []).length, 0);
+  return (course.goals || []).length
+    + roundResponses
+    + (course.jobReflections || []).length
+    + (course.surveys || []).length;
+}
+
+function participationEvidenceCount(course) {
+  return (course.rounds || []).reduce((sum, round) => sum + (round.items || []).length, 0)
+    + (course.jobReflections || []).length;
 }
 
 /* ---- inlined from src\services\classManagementService.js ---- */
@@ -310,9 +332,9 @@ function filterCourseByClass(course, classId = "all") {
 }
 
 function participantCountForClass(course, classId = "all") {
-  if (classId === "all") return course.participantCount || 0;
-  const registered = (course.participants || []).filter((item) => matchesClass(item, classId)).length;
-  return registered || Math.ceil((course.participantCount || 0) / Math.max(1, course.classCount || 1));
+  const students = collectCourseStudents(course);
+  if (classId === "all") return students.length;
+  return students.filter((item) => matchesClass(item, classId)).length;
 }
 
 /* ---- inlined from src\services\localStorageRepository.js ---- */
@@ -416,6 +438,9 @@ function buildAnalysis(course, kind = "all") {
       ];
 
   return {
+    mode: "mock",
+    generatedAt: now(),
+    evidenceCount: evidencePool.length,
     summary: "교육생 응답은 ‘신속하고 정확한 보고’, ‘조합원 관점의 판단’, ‘질문하고 기록하는 학습 습관’에 집중됩니다. 특히 실수를 숨기게 되는 현실적 장벽에 반응이 모여, 원칙 설명보다 실제 보고 문장을 연습하는 개입이 효과적입니다.",
     clusters: [
       { title: "신속한 보고와 투명성", count: Math.max(4, pollItems.length), insight: "완벽한 해결보다 영향 범위를 먼저 공유하는 행동이 핵심으로 나타났습니다." },
@@ -845,7 +870,7 @@ function summarizeJobReflections(sessions, reflections, participantCount) {
     headquartersSummary: improvement
       ? `이번 기수에서는 ‘${improvement.title}’ 강의에서 보완 요구가 반복되었습니다.${topImprovementReason ? ` 주요 개선 요구는 ‘${topImprovementReason}’입니다.` : ""} 다음 기수 교안에는 실제 사례, 업무 단계별 흐름과 현장 적용 예시를 보완하는 것이 좋습니다.`
       : "현재까지 특정 강의에 집중된 보완 요구는 없습니다. 회고가 쌓이면 다음 기수 개선 항목을 제안합니다.",
-    operationsSummary: `오늘 회고 제출률은 ${reflections.length}/${participantCount}명입니다.${best ? ` 현업 적용성이 높게 평가된 강의는 ‘${best.title}’입니다.` : ""}${improvement ? ` 보완 필요 응답이 가장 많은 강의는 ‘${improvement.title}’입니다.` : ""}`,
+    operationsSummary: `오늘 회고 제출 현황은 ${formatSubmissionCount(reflections.length, participantCount)}입니다.${best ? ` 현업 적용성이 높게 평가된 강의는 ‘${best.title}’입니다.` : ""}${improvement ? ` 보완 필요 응답이 가장 많은 강의는 ‘${improvement.title}’입니다.` : ""}`,
   };
 }
 
@@ -1413,6 +1438,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   const mission = nextMission;
 
   const saveGoal = () => {
+    if (phase !== "before") return notify("입교 전 목표 작성 기간이 종료되었습니다. 작성된 내용은 조회만 할 수 있습니다.");
     if (!goalDraft || goalDraft.trim().length < 8) return notify("목표를 조금 더 구체적으로 작성해주세요.");
     const refined = goalDraft.trim().endsWith("겠습니다.") ? goalDraft.trim() : `${goalDraft.trim().replace(/[.!]$/, "")}하겠습니다.`;
     const plan = createGoalPlan(refined, goalAnswers);
@@ -1447,6 +1473,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   };
 
   const submitAnswer = () => {
+    if (phase !== "active") return notify("실시간 질문은 교육 중에만 응답할 수 있습니다.");
     const isObjective = activeRound?.questionType === "objective";
     if (isObjective && !selectedChoice) return notify("답변 항목을 선택해주세요.");
     if (!isObjective && !answer.trim()) return notify("답변을 입력해주세요.");
@@ -1474,6 +1501,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   };
 
   const saveAchievement = () => {
+    if (phase !== "completion") return notify("수료 성찰은 교육 종료일에만 작성할 수 있습니다.");
     if (!achievementDraft?.summary.trim()) return notify("수료 성찰 내용을 확인해주세요.");
     const achievement = { id: uid("ach"), participantId, name: participantName, classId, className, text: achievementDraft.summary.trim(), answers: achievementAnswers, createdAt: now() };
     const missionItem = {
@@ -1505,6 +1533,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   };
 
   const saveSurvey = () => {
+    if (phase !== "transfer") return notify(`현업활용도 조사는 ${getTransferDate(course)}부터 작성할 수 있습니다.`);
     if (survey.likert.some((value) => !value)) return notify("객관식 문항에 모두 답해주세요.");
     if (!survey.applied.trim() || !survey.support.trim()) return notify("현업 적용 사례와 필요한 지원을 모두 작성해주세요.");
     setCourse((c) => ({
@@ -1579,10 +1608,23 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
         <Progress steps={[!!myGoal, course.rounds.some((round) => round.kind === "poll" && round.items.some((item) => item.participantId === participantId)), !!myAchievement, !!mySurvey]} />
       </section>
       <StudentPhaseTabs phase={phase} selected={phaseTab} transferDate={getTransferDate(course)} onSelect={(next) => {
-        if (next !== phase) return notify("현재 교육기간에 해당하는 단계만 이용할 수 있습니다.");
+        const status = studentStageStatus(phase, next);
+        if (status === "locked") return notify("아직 열리지 않은 단계입니다.");
         setPhaseTab(next);
-        setView("home");
+        setView(next === phase ? "home" : "stageReview");
       }} />
+      {view === "stageReview" && <StudentStageReview
+        stage={phaseTab}
+        goal={myGoal}
+        achievement={myAchievement}
+        mission={myMission}
+        survey={mySurvey}
+        pollCount={course.rounds.filter((round) => round.kind === "poll" && round.items.some((item) => item.participantId === participantId)).length}
+        boardCount={boardRounds.filter((round) => round.items.some((item) => item.participantId === participantId)).length}
+        roleplayComplete={myRoleplayComplete}
+        reflectionComplete={Boolean(myLatestJobReflection)}
+        onBack={() => { setPhaseTab(phase); setView("home"); }}
+      />}
       {view === "home" && <StudentTodayTasks
         phase={phase}
         stage={stage}
@@ -1598,6 +1640,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
       />}
       {view === "home"
         && stage !== "class"
+        && stage !== "followupWait"
         && !(phase === "before" && myGoal)
         && !(phase === "completion" && stage === "done")
         && !(phase === "transfer" && stage === "done")
@@ -1605,7 +1648,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
       {view === "home" && ["completion", "followupWait", "transfer"].includes(phase) && (
         <StudentReentryCard course={course} student={student} phase={phase} onOpenSurvey={() => setView("survey")} />
       )}
-      {phase !== "active" && <StudentGoalCard goal={myGoal} onWrite={() => setView("goal")} />}
+      {phase !== "active" && <StudentGoalCard goal={myGoal} canWrite={phase === "before"} onWrite={() => setView("goal")} />}
       {view === "goal" && (
         <ActionPanel title="나의 목표 세우기" eyebrow="입교 전 목표">
           <p className="helper">몇 가지 질문에 답하면 AI가 ‘나의 교육 목표’로 정리해 드립니다. 이 목표는 수료 때와 교육 2개월 후 다시 확인합니다.</p>
@@ -1661,7 +1704,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
           )}
         </>
       )}
-      {phase === "active" && view === "home" && <StudentGoalCard goal={myGoal} onWrite={() => setView("goal")} compact />}
+      {phase === "active" && view === "home" && <StudentGoalCard goal={myGoal} canWrite={false} compact />}
       {course.type === "ideology" && phase === "active" && view === "home" && <StudentStampCard stamps={ideologyStamps.filter((item) => item.courseId === course.code)} student={student} />}
       {view === "roleplay" && course.type === "newbie" && course.roleplayConfig?.enabled && course.roleplayConfig.classId === classId && (
         <ActionPanel title="AI 팀장 보고 훈련" eyebrow="신규직원과정">
@@ -1797,7 +1840,7 @@ function StudentTodayTasks({ phase, stage, activeRound, boardRounds, boardComple
   );
 }
 
-function StudentGoalCard({ goal, onWrite, compact = false }) {
+function StudentGoalCard({ goal, onWrite, canWrite = false, compact = false }) {
   const [expanded, setExpanded] = useState(false);
   const detailId = compact ? "goal-detail-compact" : "goal-detail-full";
   return (
@@ -1808,7 +1851,11 @@ function StudentGoalCard({ goal, onWrite, compact = false }) {
         <div><span>교육 중 집중 포인트</span><p>{goal.focusPoint || "핵심 개념을 현장 사례와 연결하는 방법에 집중하기"}</p></div>
         <div><span>현업 행동 미션</span><p>{goal.actionMission || "배운 내용을 현업에서 1회 실천하고 결과를 기록하기"}</p></div>
       </> : <><span>나의 이번 교육 목표</span><p className="muted">아직 목표를 작성하지 않았어요.</p></>}</div>
-      {!goal ? <button onClick={onWrite}>작성</button> : <button className="goal-summary-toggle" aria-expanded={expanded} aria-controls={detailId} onClick={() => setExpanded((value) => !value)}>{expanded ? "접기" : "더보기"}</button>}
+      {!goal
+        ? canWrite
+          ? <button onClick={onWrite}>작성</button>
+          : <span className="goal-locked-status">미작성</span>
+        : <button className="goal-summary-toggle" aria-expanded={expanded} aria-controls={detailId} onClick={() => setExpanded((value) => !value)}>{expanded ? "접기" : "더보기"}</button>}
     </section>
   );
 }
@@ -1985,6 +2032,40 @@ function StudentReentryCard({ course, student, phase, onOpenSurvey }) {
   );
 }
 
+function studentStageStatus(phase, stageId) {
+  const order = { before: 0, active: 1, completion: 2, transfer: 3 };
+  const currentPosition = ({ before: 0, active: 1, completion: 2, followupWait: 2.5, transfer: 3 })[phase] ?? 0;
+  if (stageId === phase) return "current";
+  if (order[stageId] < currentPosition) return "review";
+  return "locked";
+}
+
+function StudentStageReview({ stage, goal, achievement, mission, survey, pollCount, boardCount, roleplayComplete, reflectionComplete, onBack }) {
+  const titles = { before: "입교 전 목표", active: "교육 중 참여", completion: "수료 성찰", transfer: "교육 후 현업활용" };
+  return (
+    <ActionPanel title={titles[stage] || "지난 단계"} eyebrow="지난 단계 조회">
+      <div className="stage-review-notice"><b>조회 전용</b><span>지난 단계의 기록은 확인할 수 있지만 새로 작성하거나 변경할 수 없습니다.</span></div>
+      {stage === "before" && (goal ? <div className="stage-review-grid">
+        <article><span>교육 목표</span><p>{goal.goalText || goal.text}</p></article>
+        <article><span>집중 포인트</span><p>{goal.focusPoint || "작성된 집중 포인트가 없습니다."}</p></article>
+        <article><span>현업 행동 미션</span><p>{goal.actionMission || "작성된 행동 미션이 없습니다."}</p></article>
+      </div> : <div className="board-empty">입교 전 목표를 작성하지 않았습니다.</div>)}
+      {stage === "active" && <div className="stage-review-grid compact">
+        <Stat label="실시간 질문 참여" value={`${pollCount}건`} />
+        <Stat label="장표 업로드" value={`${boardCount}건`} />
+        <Stat label="보고 훈련" value={roleplayComplete ? "완료" : "미참여"} />
+        <Stat label="직무강의 회고" value={reflectionComplete ? "완료" : "미참여"} />
+      </div>}
+      {stage === "completion" && (achievement ? <>
+        <div className="stage-review-grid"><article><span>수료 성찰</span><p>{achievement.text}</p></article><article><span>나의 현업 미션</span><p>{mission?.missionText || "생성된 현업 미션이 없습니다."}</p></article></div>
+        {mission?.missionText && <MissionElementBadges missionText={mission.missionText} />}
+      </> : <div className="board-empty">수료 성찰을 작성하지 않았습니다.</div>)}
+      {stage === "transfer" && <div className="stage-review-grid"><article><span>현업활용도 조사</span><p>{survey ? "제출 완료" : "아직 제출하지 않았습니다."}</p></article></div>}
+      <button className="secondary" onClick={onBack}>현재 단계로 돌아가기</button>
+    </ActionPanel>
+  );
+}
+
 function StudentPhaseTabs({ phase, selected, transferDate, onSelect }) {
   const tabs = [
     ["before", "입교 전", "교육 시작일 이전"],
@@ -1995,15 +2076,18 @@ function StudentPhaseTabs({ phase, selected, transferDate, onSelect }) {
   return (
     <section className="student-phase-tabs" aria-label="교육 단계">
       {tabs.map(([id, label, description]) => {
-        const enabled = id === phase;
+        const status = studentStageStatus(phase, id);
+        const enabled = status !== "locked";
         return (
           <button
             key={id}
-            className={`${selected === id ? "selected" : ""} ${enabled ? "enabled" : "locked"}`}
+            className={`${selected === id ? "selected" : ""} ${status}`}
             onClick={() => onSelect(id)}
+            disabled={!enabled}
             aria-disabled={!enabled}
+            aria-current={status === "current" ? "step" : undefined}
           >
-            <span>{enabled ? "● 활성" : "🔒 잠김"}</span>
+            <span>{status === "current" ? "● 활성" : status === "review" ? "○ 지난 단계" : "🔒 잠김"}</span>
             <b>{label}</b>
             <small>{description}</small>
           </button>
@@ -2264,11 +2348,22 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
     setAnalysis(null);
   }, [course.code]);
   const selectedClass = course.classes.find((item) => item.id === selectedClassFilter) || course.classes[0];
+  const operationsOpen = phase === "active";
+  const activeTabRef = useRef(null);
+
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [tab]);
 
   const navigate = (target) => setTab(target);
   const runAnalysis = (kind = "all") => {
+    if (!analysisEvidenceCount(filteredCourse)) {
+      notify("분석할 교육생 응답이 아직 없습니다.");
+      return false;
+    }
     setAnalysis(buildAnalysis(filteredCourse, kind));
     notify("제공된 응답만 근거로 AI 분석을 생성했습니다.");
+    return true;
   };
 
   const react = (roundId, itemId, key) => {
@@ -2282,6 +2377,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
   };
 
   const createQuestion = () => {
+    if (!operationsOpen) return notify("실시간 질문은 교육 중 단계에서만 열 수 있습니다.");
     if (!questionDraft.prompt.trim()) return notify("질문 내용을 입력해주세요.");
     const options = questionDraft.options.map((item) => item.trim()).filter(Boolean);
     if (questionDraft.type === "objective" && options.length < 2) return notify("객관식 항목을 2개 이상 입력해주세요.");
@@ -2308,6 +2404,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
   };
 
   const createBoardModule = () => {
+    if (!operationsOpen) return notify("장표 업로드 모듈은 교육 중 단계에서만 만들 수 있습니다.");
     if (!boardModule.title.trim()) return notify("장표 업로드 모듈명을 입력해주세요.");
     const created = {
       id: uid("board"),
@@ -2340,6 +2437,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
   };
 
   const saveRoleplaySetting = (enabled = true) => {
+    if (!operationsOpen) return notify("보고 훈련은 교육 중 단계에서만 운영할 수 있습니다.");
     setCourse((current) => ({
       ...current,
       roleplayConfig: {
@@ -2390,6 +2488,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
       classCount: newCourse.classCount,
       classes: createClasses(newCourse.classCount),
       participants: [],
+      participantCount: 0,
       startDate: newCourse.startDate,
       endDate: newCourse.endDate,
       transferDate: addMonthsToDate(newCourse.endDate, 2),
@@ -2425,8 +2524,8 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
 
   return (
     <>
-      {tab !== "create" && <nav className="prof-nav">
-        {professorTabs.map(([id, label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>)}
+      {tab !== "create" && <nav className="prof-nav" role="tablist" aria-label="교수요원 운영 메뉴">
+        {professorTabs.map(([id, label]) => <button key={id} ref={tab === id ? activeTabRef : null} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>)}
       </nav>}
       <main className="page professor-page">
         <PageBack onClick={() => tab === "create" || tab === "dashboard" ? onExit() : setTab("dashboard")} />
@@ -2446,23 +2545,25 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
         {tab === "dashboard" && <>
           {course.type === "ideology" && phase === "active" && <OlympicActivityControl course={course} setCourse={setCourse} />}
           <OverallCourseSummary course={course} />
-          <ProfessorDashboard course={{ ...filteredCourse, participantCount: filteredParticipantCount }} onNavigate={navigate} onAnalyze={() => { runAnalysis(); setTab("ai"); }} />
+          <ProfessorDashboard course={{ ...filteredCourse, participantCount: filteredParticipantCount }} phase={phase} onNavigate={navigate} onAnalyze={() => { if (runAnalysis()) setTab("ai"); }} />
         </>}
-        {tab === "goals" && <DataList title="입교 전 목표" items={filteredCourse.goals} onAnalyze={() => { runAnalysis("goals"); setTab("ai"); }} />}
+        {tab === "goals" && <DataList title="입교 전 목표" items={filteredCourse.goals} onAnalyze={() => { if (runAnalysis("goals")) setTab("ai"); }} />}
         {tab === "live" && (
           <section className="content-card">
-            <SectionTitle eyebrow="실시간 참여" title="교육생 질문 생성과 응답 현황" action={<button className="primary compact" onClick={() => { runAnalysis("poll"); setTab("ai"); }}>AI로 묶기</button>} />
-            <CurrentClassNotice className={selectedClass.name} action="질문이 개설됩니다." />
-            <QuestionComposer value={questionDraft} onChange={setQuestionDraft} onSubmit={createQuestion} />
+            <SectionTitle eyebrow="실시간 참여" title="교육생 질문 생성과 응답 현황" action={<button className="primary compact" disabled={!analysisEvidenceCount(filteredCourse)} onClick={() => { if (runAnalysis("poll")) setTab("ai"); }}>AI로 묶기</button>} />
+            {operationsOpen
+              ? <><CurrentClassNotice className={selectedClass.name} action="질문이 개설됩니다." /><QuestionComposer value={questionDraft} onChange={setQuestionDraft} onSubmit={createQuestion} /></>
+              : <ProfessorReadOnlyNotice phase={phase} action="기존 질문과 응답 조회" />}
             {filteredCourse.rounds.filter((r) => r.kind === "poll").map((round) => <RoundView key={round.id} round={round} onReact={react} />)}
           </section>
         )}
         {tab === "board" && (
           <section className="content-card">
-            {course.type === "job" ? <ProfessorJobReflection course={course} setCourse={setCourse} notify={notify} classFilter={selectedClassFilter} participantCount={filteredParticipantCount} /> : <>
+            {course.type === "job" ? <ProfessorJobReflection course={course} setCourse={setCourse} notify={notify} classFilter={selectedClassFilter} participantCount={filteredParticipantCount} readOnly={!operationsOpen} /> : <>
               <SectionTitle eyebrow="팀 학습" title="모듈별 장표 발표·AI 분석" />
-              <CurrentClassNotice className={selectedClass.name} action="장표 모듈이 개설됩니다." />
-              <BoardModuleCreator value={boardModule} onChange={setBoardModule} onSubmit={createBoardModule} />
+              {operationsOpen
+                ? <><CurrentClassNotice className={selectedClass.name} action="장표 모듈이 개설됩니다." /><BoardModuleCreator value={boardModule} onChange={setBoardModule} onSubmit={createBoardModule} /></>
+                : <ProfessorReadOnlyNotice phase={phase} action="기존 장표와 분석 결과 조회" />}
               <ProfessorBoardGallery
                 rounds={filteredCourse.rounds.filter((round) => round.kind === "board")}
                 selectedId={selectedBoardRound}
@@ -2477,26 +2578,29 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
         {tab === "stamps" && course.type === "ideology" && <ProfessorStampManager course={course} stamps={ideologyStamps.filter((item) => item.courseId === course.code)} setStamps={setIdeologyStamps} notify={notify} />}
         {tab === "ai" && (
           <section className="content-card">
-            <SectionTitle eyebrow="근거 기반 분석" title={`AI 교육 분석 리포트 · ${selectedClass.name}`} action={<button className="primary compact" onClick={() => runAnalysis()}>분석 새로고침</button>} />
+            <SectionTitle eyebrow="근거 기반 분석" title={`AI 교육 분석 리포트 · ${selectedClass.name}`} action={<button className="primary compact" disabled={!analysisEvidenceCount(filteredCourse)} onClick={() => runAnalysis()}>분석 새로고침</button>} />
             <OverallCourseSummary course={course} compact />
-            {analysis ? <AIEvidenceResult result={analysis} /> : <EmptyState title="아직 생성된 분석이 없습니다." action={`${selectedClass.name} 분석하기`} onClick={() => runAnalysis()} />}
+            {analysis ? <AIEvidenceResult result={analysis} /> : analysisEvidenceCount(filteredCourse)
+              ? <EmptyState title="아직 생성된 분석이 없습니다." action={`${selectedClass.name} 분석하기`} onClick={() => runAnalysis()} />
+              : <EmptyState title="분석할 교육생 응답이 아직 없습니다." />}
           </section>
         )}
         {tab === "roleplay" && course.type === "newbie" && (
           <section className="content-card">
             <SectionTitle eyebrow="신규직원과정" title="교육생 AI 보고 훈련 설정" />
             <p className="section-desc">교수요원은 상황과 난이도를 정해 훈련을 열고, 실제 답변은 교육생이 자신의 화면에서 작성합니다.</p>
+            {!operationsOpen && <ProfessorReadOnlyNotice phase={phase} action="기존 보고 훈련 결과 조회" />}
             <div className="scenario-grid">
-              {["민원 발생 보고", "시재 차이 보고", "조합원 항의 보고", "경제사업 사고 위험 보고", "상사 부재 중 긴급 보고", "개인정보 관련 사고 우려", "농산물 출하 지연 보고", "조합원 민원 확산 가능 상황"].map((x) => <button className={selectedScenario === x ? "selected" : ""} key={x} onClick={() => setSelectedScenario(x)}>{x}</button>)}
+              {["민원 발생 보고", "시재 차이 보고", "조합원 항의 보고", "경제사업 사고 위험 보고", "상사 부재 중 긴급 보고", "개인정보 관련 사고 우려", "농산물 출하 지연 보고", "조합원 민원 확산 가능 상황"].map((x) => <button disabled={!operationsOpen} className={selectedScenario === x ? "selected" : ""} key={x} onClick={() => setSelectedScenario(x)}>{x}</button>)}
             </div>
-            <div className="difficulty-row">{[["쉬움", "친절한 팀장"], ["보통", "바쁜 팀장"], ["어려움", "꼬리질문 많은 팀장"]].map(([level, desc]) => <button className={difficulty === level ? "selected" : ""} onClick={() => setDifficulty(level)} key={level}><b>{level}</b><span>{desc}</span></button>)}</div>
-            <CurrentClassNotice className={selectedClass.name} action="보고훈련이 운영됩니다." />
+            <div className="difficulty-row">{[["쉬움", "친절한 팀장"], ["보통", "바쁜 팀장"], ["어려움", "꼬리질문 많은 팀장"]].map(([level, desc]) => <button disabled={!operationsOpen} className={difficulty === level ? "selected" : ""} onClick={() => setDifficulty(level)} key={level}><b>{level}</b><span>{desc}</span></button>)}</div>
+            <CurrentClassNotice className={selectedClass.name} action={operationsOpen ? "보고훈련이 운영됩니다." : "기존 설정과 결과를 조회합니다."} />
             <div className="roleplay-open-actions">
               <div><b>{selectedClass.name} 교육생 화면 상태</b><span>{course.roleplayConfig?.enabled && course.roleplayConfig.classId === selectedClass.id ? "훈련 열림" : "훈련 닫힘"}</span></div>
-              <div>
+              {operationsOpen && <div>
                 <button className="primary" onClick={() => saveRoleplaySetting(true)}>{course.roleplayConfig?.enabled && course.roleplayConfig.classId === selectedClass.id ? "설정 변경 반영" : `${selectedClass.name}에 훈련 열기`}</button>
                 {course.roleplayConfig?.enabled && course.roleplayConfig.classId === selectedClass.id && <button className="secondary" onClick={() => saveRoleplaySetting(false)}>보고 훈련 종료</button>}
-              </div>
+              </div>}
             </div>
             <details className="roleplay-response-list mobile-details">
               <summary>교육생 훈련 결과 {(filteredCourse.reportTrainings || []).length}건 보기</summary>
@@ -2508,7 +2612,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
         {tab === "transfer" && (
           <section className="content-card">
             <SectionTitle eyebrow="교육 이후" title="현업 전이 관리와 성과 내보내기" />
-            <div className="transfer-stats"><Stat label="수료 성찰" value={`${filteredCourse.achievements.length}/${filteredParticipantCount}`} /><Stat label="현업활용도 응답" value={`${filteredCourse.surveys.length}/${filteredParticipantCount}`} /><Stat label="평균 적용도" value={`${averageLikert(filteredCourse.surveys)}점`} /></div>
+            <div className="transfer-stats"><Stat label="수료 성찰" value={formatSubmissionCount(filteredCourse.achievements.length, filteredParticipantCount)} /><Stat label="현업활용도 응답" value={formatSubmissionCount(filteredCourse.surveys.length, filteredParticipantCount)} /><Stat label="평균 적용도" value={formatAverageLikert(filteredCourse.surveys)} /></div>
             <ClassSubmissionSummary course={course} />
             <TransferReportSummary course={filteredCourse} participantCount={filteredParticipantCount} />
             <FollowupPushDemo status={pushStatus} onStart={startPushDemo} onOpen={openFollowupSurveyDemo} />
@@ -2525,26 +2629,37 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
   );
 }
 
-function ProfessorDashboard({ course, onNavigate, onAnalyze }) {
+function ProfessorDashboard({ course, phase, onNavigate, onAnalyze }) {
   const questionCount = course.rounds.reduce((sum, r) => sum + r.items.length, 0);
-  const clusters = buildAnalysis(course).clusters.length;
+  const boardCount = course.rounds.filter((round) => round.kind === "board").reduce((sum, round) => sum + round.items.length, 0);
+  const hasAnalysisEvidence = analysisEvidenceCount(course) > 0;
+  const hasParticipationEvidence = participationEvidenceCount(course) > 0;
+  const clusters = hasAnalysisEvidence ? buildAnalysis(course).clusters.length : 0;
   const intervention = buildTeachingIntervention(course);
+  const phaseCopy = {
+    before: { label: "● 준비", title: "과정 시작 전 준비 단계입니다.", desc: "교육생 입교 전 목표 제출 현황과 과정 운영 준비를 확인하세요." },
+    active: { label: "● LIVE", title: "지금 수업은 ‘참여 데이터 축적’ 단계입니다.", desc: "실시간 질문, 장표와 회고 응답을 확인하고 필요한 순간에 개입하세요." },
+    completion: { label: "● 수료일", title: "수료 성찰을 수집하는 단계입니다.", desc: "목표 달성도와 현업 실천 다짐 제출 현황을 확인하세요." },
+    followupWait: { label: "● 사후 준비", title: "현업 적용을 기다리는 기간입니다.", desc: "교육 중 활동은 조회 전용이며, 수료 성찰과 사후조사 예정일을 확인할 수 있습니다." },
+    transfer: { label: "● 사후조사", title: "현업활용도 조사 단계입니다.", desc: "제출 현황과 적용을 도운 요인·막은 요인을 전이 리포트에서 확인하세요." },
+  }[phase];
   const cards = [
-    ["목표 제출", `${course.goals.length}/${course.participantCount}명`, "goals", "교육 시작 전 목표 수집"],
-    ["수료 성찰", `${course.achievements.length}/${course.participantCount}명`, "goals", "목표 달성도 작성"],
-    ["사후 적용도", `${course.surveys.length}/${course.participantCount}명`, "transfer", "현업 적용 응답"],
+    ["목표 제출", formatSubmissionCount(course.goals.length, course.participantCount), "goals", "등록 인원 기준"],
+    ["수료 성찰", formatSubmissionCount(course.achievements.length, course.participantCount), "goals", "등록 인원 기준"],
+    ["사후 적용도", formatSubmissionCount(course.surveys.length, course.participantCount), "transfer", "등록 인원 기준"],
     ["질문·게시판", `${questionCount}건`, "live", "교육 중 참여 데이터"],
-    ["AI 핵심 주제", `${clusters}개`, "ai", "응답 기반 주제 묶음"],
+    ["AI 핵심 주제", hasAnalysisEvidence ? `${clusters}개` : "응답 대기", "ai", hasAnalysisEvidence ? "응답 기반 주제 묶음" : "응답 수집 후 분석 가능"],
   ];
   return (
     <>
-      <section className="dashboard-intro">
-        <div><span className="live-dot">● LIVE</span><h2>지금 수업은 ‘참여 데이터 축적’ 단계입니다.</h2><p>목표 제출률을 높이고, 실수 보고에 관한 교육생의 실제 장벽을 짚어주세요.</p></div>
-        <div className="dashboard-actions"><button className="primary" onClick={onAnalyze}>AI 분석 보기</button></div>
+      <section className={`dashboard-intro phase-${phase}`}>
+        <div><span className="live-dot">{phaseCopy.label}</span><h2>{phaseCopy.title}</h2><p>{phaseCopy.desc}</p></div>
+        <div className="dashboard-actions"><button className="primary" disabled={!hasAnalysisEvidence} onClick={onAnalyze}>{hasAnalysisEvidence ? "AI 분석 보기" : "응답 수집 대기"}</button></div>
       </section>
       <section className="metric-grid">
         {cards.map(([label, value, target, desc]) => <button className="metric-card" key={label} onClick={() => onNavigate(target)}><span>{label}</span><strong>{value}</strong><p>{desc}</p><i>자세히 보기 →</i></button>)}
       </section>
+      {hasParticipationEvidence ? <>
       <section className="recommend-card">
         <div className="recommend-head"><div className="ai-symbol">AI</div><div><span className="eyebrow">지금 짚으면 좋은 질문</span><h2>강의 개입 추천</h2></div><ReviewBadge /></div>
         <ol>
@@ -2563,6 +2678,10 @@ function ProfessorDashboard({ course, onNavigate, onAnalyze }) {
           <article><span>토론으로 넘길 주제</span><p>{intervention.discussionTopic}</p></article>
         </div>
       </section>
+      </> : <section className="analysis-readiness-card">
+        <div className="ai-symbol">AI</div>
+        <div><span className="eyebrow">분석 준비 상태</span><h2>교육 중 참여 응답을 기다리고 있습니다.</h2><p>실시간 질문 응답이나 팀 장표·직무회고가 수집되면 근거 기반 강의 개입 제안을 확인할 수 있습니다.</p><small>현재 참여 근거 · 질문 {questionCount}건 · 장표 {boardCount}건</small></div>
+      </section>}
       <section className="flow-card">
         <h3>교육 성과 데이터 흐름</h3>
         <div className="flow-steps">{["입교 전 목표", "교육 중 참여", "수료 성찰", "현업 미션", "2개월 후 적용"].map((x, i) => <React.Fragment key={x}><div><b>{i + 1}</b><span>{x}</span></div>{i < 4 && <i>→</i>}</React.Fragment>)}</div>
@@ -2629,7 +2748,7 @@ function TransferReportSummary({ course, participantCount }) {
         <div className="ai-symbol">AI</div>
         <div>
           <div className="summary-head"><span>전이 리포트 요약</span><ReviewBadge /></div>
-          <p>현업활용도 응답은 {surveys.length}/{participantCount}명 제출되었습니다. 평균 적용도는 {averageLikert(surveys)}점이며, 개인 평가가 아니라 다음 교육과 현업 지원을 개선하기 위한 집계 참고자료로 활용합니다.</p>
+          <p>현업활용도 응답은 {formatSubmissionCount(surveys.length, participantCount)} 제출되었습니다. 평균 적용도는 {formatAverageLikert(surveys)}이며, 개인 평가가 아니라 다음 교육과 현업 지원을 개선하기 위한 집계 참고자료로 활용합니다.</p>
         </div>
       </div>
       <div className="transfer-case-grid">
@@ -2940,7 +3059,7 @@ function BoardModuleCreator({ value, onChange, onSubmit }) {
   );
 }
 
-function ProfessorJobReflection({ course, setCourse, notify, classFilter = "class-1", participantCount }) {
+function ProfessorJobReflection({ course, setCourse, notify, classFilter = "class-1", participantCount, readOnly = false }) {
   const [selectedDate, setSelectedDate] = useState(todayInKorea());
   const [form, setForm] = useState({ title: "", instructor: "", date: todayInKorea(), startTime: "09:00", endTime: "10:00" });
   const [pasteText, setPasteText] = useState("");
@@ -2957,6 +3076,7 @@ function ProfessorJobReflection({ course, setCourse, notify, classFilter = "clas
   const applicationKeyword = summary.applicationPoints[0] ? `${summary.applicationPoints[0].slice(0, 20)}${summary.applicationPoints[0].length > 20 ? "…" : ""}` : "-";
 
   const addSession = () => {
+    if (readOnly) return notify("직무강의 목록은 교육 중 단계에서만 추가할 수 있습니다.");
     if (!form.title.trim() || !form.instructor.trim() || !form.date || !form.startTime || !form.endTime) return notify("강의명, 강사명, 일자와 시간을 모두 입력해주세요.");
     if (form.endTime <= form.startTime) return notify("종료시간은 시작시간보다 늦어야 합니다.");
     const session = { id: uid("job-session"), courseId: course.code, classId: classFilter, className: selectedClassName, date: form.date, title: form.title.trim(), instructor: form.instructor.trim(), startTime: form.startTime, endTime: form.endTime };
@@ -2968,6 +3088,7 @@ function ProfessorJobReflection({ course, setCourse, notify, classFilter = "clas
   };
 
   const addPastedSessions = () => {
+    if (readOnly) return notify("직무강의 목록은 교육 중 단계에서만 추가할 수 있습니다.");
     const parsed = parseJobSchedule(pasteText, selectedDate, course.code, uid);
     const errors = parsed.filter((item) => item.error);
     const valid = parsed.filter((item) => !item.error).map((item) => ({ ...item, classId: classFilter, className: selectedClassName }));
@@ -2979,6 +3100,7 @@ function ProfessorJobReflection({ course, setCourse, notify, classFilter = "clas
   };
 
   const saveEdit = () => {
+    if (readOnly) return notify("종료된 과정의 강의 목록은 조회만 할 수 있습니다.");
     if (!editing.title.trim() || !editing.instructor.trim()) return notify("강의명과 강사명을 입력해주세요.");
     setCourse((current) => ({ ...current, jobSessions: current.jobSessions.map((session) => session.id === editing.id ? { ...editing, title: editing.title.trim(), instructor: editing.instructor.trim() } : session) }));
     setEditing(null);
@@ -2986,6 +3108,7 @@ function ProfessorJobReflection({ course, setCourse, notify, classFilter = "clas
   };
 
   const removeSession = (session) => {
+    if (readOnly) return notify("종료된 과정의 강의 목록은 조회만 할 수 있습니다.");
     if (!window.confirm(`‘${session.title}’ 강의를 목록에서 삭제할까요?`)) return;
     setCourse((current) => ({ ...current, jobSessions: current.jobSessions.filter((item) => item.id !== session.id) }));
     notify("강의 목록에서 삭제했습니다.");
@@ -2994,12 +3117,13 @@ function ProfessorJobReflection({ course, setCourse, notify, classFilter = "clas
   return (
     <div className="prof-job-reflection">
       <SectionTitle eyebrow="과정 개선을 위한 회고" title="오늘의 직무강의 회고" />
-      <CurrentClassNotice className={selectedClassName} action="강의 목록과 회고가 운영됩니다." />
+      <CurrentClassNotice className={selectedClassName} action={readOnly ? "등록된 강의와 회고 결과를 조회합니다." : "강의 목록과 회고가 운영됩니다."} />
       <p className="section-desc">하루 강의 목록을 한 번 등록하면 교육생은 교육 종료 시 한 번만 회고합니다. 개별 자료 요청이 아니라 다음 기수와 과정 개선을 위한 데이터입니다.</p>
+      {readOnly && <ProfessorReadOnlyNotice phase={getCoursePhase(course)} action="등록된 강의 목록과 회고 결과 조회" />}
 
       <section className="job-reflection-summary">
         <div className="job-summary-stats">
-          <Stat label="회고 제출 인원" value={`${summary.submitted}/${summary.participantCount}명`} />
+          <Stat label="회고 제출 인원" value={formatSubmissionCount(summary.submitted, summary.participantCount)} />
           <Stat label="현업에 가장 도움 된 강의 1위" value={summary.bestRanking[0]?.title || "-"} />
           <Stat label="보완이 필요한 강의 1위" value={summary.improvementRanking[0]?.title || "-"} />
           <Stat label="주요 현업 적용 키워드" value={applicationKeyword} />
@@ -3032,13 +3156,13 @@ function ProfessorJobReflection({ course, setCourse, notify, classFilter = "clas
             <input type="time" value={editing.startTime} onChange={(e) => setEditing({ ...editing, startTime: e.target.value })} aria-label="강의 시작시간 수정" />
             <input type="time" value={editing.endTime} onChange={(e) => setEditing({ ...editing, endTime: e.target.value })} aria-label="강의 종료시간 수정" />
             <div><button className="primary compact" onClick={saveEdit}>저장</button><button className="secondary compact" onClick={() => setEditing(null)}>취소</button></div>
-          </article> : <article key={session.id}><div><b>{session.startTime}~{session.endTime}</b><span>{session.title}</span><small>{session.instructor}</small></div><div><button onClick={() => setEditing({ ...session })}>수정</button><button className="delete" onClick={() => removeSession(session)}>삭제</button></div></article>)}
+          </article> : <article key={session.id}><div><b>{session.startTime}~{session.endTime}</b><span>{session.title}</span><small>{session.instructor}</small></div>{!readOnly && <div><button onClick={() => setEditing({ ...session })}>수정</button><button className="delete" onClick={() => removeSession(session)}>삭제</button></div>}</article>)}
         </div>
-        <div className="job-manager-actions">
+        {!readOnly && <div className="job-manager-actions">
           <button className="primary" aria-expanded={showAddForm} onClick={() => setShowAddForm((value) => !value)}>{showAddForm ? "강의 추가 닫기" : "＋ 강의 추가"}</button>
           <button className="secondary" aria-expanded={showPaste} onClick={() => setShowPaste((value) => !value)}>{showPaste ? "빠른 붙여넣기 닫기" : "빠른 붙여넣기 열기"}</button>
-        </div>
-        {showAddForm && <div className="job-session-form">
+        </div>}
+        {!readOnly && showAddForm && <div className="job-session-form">
           <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="강의명" aria-label="강의명 입력" />
           <input value={form.instructor} onChange={(e) => setForm({ ...form, instructor: e.target.value })} placeholder="강사명" aria-label="강사명 입력" />
           <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} aria-label="강의일자 입력" />
@@ -3046,7 +3170,7 @@ function ProfessorJobReflection({ course, setCourse, notify, classFilter = "clas
           <input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} aria-label="강의 종료시간 입력" />
           <button className="primary" onClick={addSession}>강의 추가</button>
         </div>}
-        {showPaste && <div className="job-paste-box"><div><b>빠른 붙여넣기</b><small>예: 09:00~10:00 계약실무 / 김OO</small></div><textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder={"09:00~10:00 계약실무 / 김OO\n10:00~12:00 사고예방 사례 / 박OO"} aria-label="강의 목록 빠른 붙여넣기" /><button className="secondary" onClick={addPastedSessions}>여러 강의 자동 등록</button></div>}
+        {!readOnly && showPaste && <div className="job-paste-box"><div><b>빠른 붙여넣기</b><small>예: 09:00~10:00 계약실무 / 김OO</small></div><textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder={"09:00~10:00 계약실무 / 김OO\n10:00~12:00 사고예방 사례 / 박OO"} aria-label="강의 목록 빠른 붙여넣기" /><button className="secondary" onClick={addPastedSessions}>여러 강의 자동 등록</button></div>}
       </section>
     </div>
   );
@@ -3164,6 +3288,7 @@ function RoundView({ round, onReact }) {
 function AIEvidenceResult({ result }) {
   return (
     <div className="ai-report">
+      <div className="ai-result-meta"><span>시연용 분석</span><b>근거 {result.evidenceCount ?? result.evidence?.length ?? 0}건</b><time>{result.generatedAt ? new Date(result.generatedAt).toLocaleString("ko-KR") : "생성 시각 없음"}</time></div>
       <div className="report-summary"><div className="ai-symbol">AI</div><div><div className="summary-head"><span>AI 요약</span><ReviewBadge /></div><p>{result.summary}</p></div></div>
       <div className="report-section"><h3>핵심 주제 묶음</h3><div className="cluster-grid">{result.clusters.map((c) => <article key={c.title}><div><b>{c.title}</b><span>{c.count}개 응답</span></div><p>{c.insight}</p></article>)}</div></div>
       <div className="report-section"><h3>근거 원문</h3><p className="section-desc">아래 원문 안에서만 분석했습니다.</p><div className="evidence-list">{result.evidence.map((e, i) => <blockquote key={i}><span>{sourceLabel(e.source)} · {e.by || "익명"}</span><p>“{e.quote}”</p></blockquote>)}</div></div>
@@ -3176,7 +3301,7 @@ function AIEvidenceResult({ result }) {
 function DataList({ title, items, onAnalyze }) {
   return (
     <section className="content-card">
-      <SectionTitle eyebrow="성과 데이터" title={`${title} ${items.length}건`} action={<button className="primary compact" onClick={onAnalyze}>AI 목표 분석</button>} />
+      <SectionTitle eyebrow="성과 데이터" title={`${title} ${items.length}건`} action={<button className="primary compact" disabled={!items.length} onClick={onAnalyze}>AI 목표 분석</button>} />
       <details className="mobile-details data-list-details"><summary>교육생 응답 {items.length}건 보기</summary><div className="data-list">{items.map((x) => <article key={x.id}><div className="avatar">{(x.name || "익").slice(0, 1)}</div><div><b>{x.name || x.participantId} <em className="class-tag">{x.className || "1반"}</em></b><p>{x.text}</p><span>{new Date(x.createdAt).toLocaleString("ko-KR")}</span></div></article>)}</div></details>
     </section>
   );
@@ -3194,14 +3319,21 @@ function CurrentClassNotice({ className, action }) {
   return <div className="current-class-notice"><b>{className}</b><span>현재 {className} 대상으로 {action}</span></div>;
 }
 
+function ProfessorReadOnlyNotice({ phase, action }) {
+  const label = ({ before: "입교 전", completion: "수료일", followupWait: "현업 적용 대기", transfer: "교육 후" })[phase] || "현재";
+  return <div className="professor-readonly-notice"><b>{label} · 조회 전용</b><span>교육 중 운영 기능은 비활성화되어 있습니다. {action}만 가능합니다.</span></div>;
+}
+
 function OverallCourseSummary({ course, compact = false }) {
   const questionResponses = course.rounds.filter((round) => round.kind === "poll").reduce((sum, round) => sum + round.items.length, 0);
   const boardUploads = course.rounds.filter((round) => round.kind === "board").reduce((sum, round) => sum + round.items.length, 0);
+  const registered = participantCountForClass(course, "all");
+  const planned = Number(course.participantCount) || 0;
   return (
     <section className={`overall-course-summary ${compact ? "compact" : ""}`}>
-      <div><span className="eyebrow">조회용 전체 요약</span><h3>과정 전체 현황</h3></div>
+      <div className="overall-summary-head"><div><span className="eyebrow">조회용 전체 요약</span><h3>과정 전체 현황</h3></div><div className="enrollment-summary"><span>실제 등록</span><b>{registered}명</b>{planned > 0 && planned !== registered && <small>기존 계획 정원 {planned}명</small>}</div></div>
       <div className="overall-summary-grid">
-        <Stat label="전체 목표 제출" value={`${course.goals.length}/${course.participantCount}명`} />
+        <Stat label="전체 목표 제출" value={formatSubmissionCount(course.goals.length, registered)} />
         <Stat label="전체 질문 응답" value={`${questionResponses}건`} />
         <Stat label="전체 장표 제출" value={`${boardUploads}건`} />
         <Stat label="전체 직무 회고" value={`${course.jobReflections.length}건`} />
@@ -3260,7 +3392,7 @@ function PanelActions({ onBack, onSave, saveLabel }) { return <div className="pa
 function SectionTitle({ eyebrow, title, action }) { return <div className="section-title"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2></div>{action}</div>; }
 function Stat({ label, value }) { return <div className="stat"><span>{label}</span><b>{value}</b></div>; }
 function ReviewBadge() { return <span className="review-badge">교수요원 검토 필요</span>; }
-function EmptyState({ title, action, onClick }) { return <div className="empty"><div>AI</div><h3>{title}</h3><button className="primary" onClick={onClick}>{action}</button></div>; }
-function Toast({ children }) { return <div className="toast">{children}</div>; }
+function EmptyState({ title, action, onClick }) { return <div className="empty"><div>AI</div><h3>{title}</h3>{action && onClick && <button className="primary" onClick={onClick}>{action}</button>}</div>; }
+function Toast({ children }) { return <div className="toast" role="status" aria-live="polite" aria-atomic="true">{children}</div>; }
 function PrivacyFooter() { return <footer className="privacy-footer">입장용 이름 외 고객정보·계좌정보·회사기밀 입력 금지 · AI 결과는 교수요원의 검토 후 활용하세요.</footer>; }
 createRoot(document.getElementById("root")).render(<App />);
