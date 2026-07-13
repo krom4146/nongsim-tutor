@@ -142,6 +142,12 @@ function addMonthsToDate(dateString, months = 2) {
   return date.toISOString().slice(0, 10);
 }
 
+function formatKoreanDate(dateString) {
+  if (!dateString) return "예정일 확인 중";
+  const [year, month, day] = dateString.split("-").map(Number);
+  return `${year}. ${month}. ${day}.`;
+}
+
 function getTransferDate(course) {
   return course.transferDate || addMonthsToDate(course.endDate, 2);
 }
@@ -933,6 +939,8 @@ const SPLASH_FADE_DURATION = 600;
 const REDUCED_MOTION_SPLASH_DURATION = 1200;
 const REDUCED_MOTION_FADE_DURATION = 100;
 const STUDENT_PROFILE_KEY = "nongsim-student-profiles-v1";
+const FOLLOWUP_DEMO_NOTIFICATION_KEY = "nongsim-followup-demo-notification";
+const FOLLOWUP_DEMO_EVENT = "nongsim-followup-demo-notification";
 
 function followupTokenFromLocation() {
   const pathMatch = window.location.pathname.match(/^\/followup\/([^/]+)/);
@@ -1399,6 +1407,8 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   const [achievementAnswers, setAchievementAnswers] = useState(["", "", ""]);
   const [achievementDraft, setAchievementDraft] = useState(null);
   const [survey, setSurvey] = useState({ applied: "", support: "", likert: [0, 0, 0, 0, 0], barriers: [] });
+  const [followupDemoNotification, setFollowupDemoNotification] = useState(null);
+  const [surveyDemoPreview, setSurveyDemoPreview] = useState(false);
   const phase = getCoursePhase(course);
   const [phaseTab, setPhaseTab] = useState(phase);
   const todayReflection = (course.jobReflections || []).some((item) => item.participantId === participantId && item.date === todayInKorea());
@@ -1415,6 +1425,43 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
       setView("survey");
     }
   }, [phase, mySurvey]);
+
+  useEffect(() => {
+    const applyDemoNotification = (payload) => {
+      if (!payload || payload.courseCode !== course.code) return;
+      setFollowupDemoNotification(payload);
+    };
+    const handleDemoNotification = (event) => {
+      if (event.key !== FOLLOWUP_DEMO_NOTIFICATION_KEY || !event.newValue) return;
+      try {
+        applyDemoNotification(JSON.parse(event.newValue));
+      } catch {
+        // 잘못된 시연 알림 값은 무시합니다.
+      }
+    };
+    const handleSameTabDemoNotification = (event) => applyDemoNotification(event.detail);
+    try {
+      const saved = JSON.parse(localStorage.getItem(FOLLOWUP_DEMO_NOTIFICATION_KEY) || "null");
+      const isRecent = saved?.createdAt && Date.now() - new Date(saved.createdAt).getTime() < 5 * 60 * 1000;
+      if (isRecent) applyDemoNotification(saved);
+    } catch {
+      // 저장된 시연 알림을 읽을 수 없으면 새 알림을 기다립니다.
+    }
+    window.addEventListener("storage", handleDemoNotification);
+    window.addEventListener(FOLLOWUP_DEMO_EVENT, handleSameTabDemoNotification);
+    return () => {
+      window.removeEventListener("storage", handleDemoNotification);
+      window.removeEventListener(FOLLOWUP_DEMO_EVENT, handleSameTabDemoNotification);
+    };
+  }, [course.code]);
+
+  const openSurveyFromDemoNotification = () => {
+    setFollowupDemoNotification(null);
+    setSurveyDemoPreview(phase !== "transfer");
+    setPhaseTab("transfer");
+    setView("survey");
+    window.location.hash = "survey";
+  };
 
   const stage = phase === "before"
     ? (!myGoal ? "goal" : "done")
@@ -1533,6 +1580,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   };
 
   const saveSurvey = () => {
+    if (surveyDemoPreview && phase !== "transfer") return notify("시연 화면입니다. 실제 응답은 교육 종료 2개월 후 저장됩니다.");
     if (phase !== "transfer") return notify(`현업활용도 조사는 ${getTransferDate(course)}부터 작성할 수 있습니다.`);
     if (survey.likert.some((value) => !value)) return notify("객관식 문항에 모두 답해주세요.");
     if (!survey.applied.trim() || !survey.support.trim()) return notify("현업 적용 사례와 필요한 지원을 모두 작성해주세요.");
@@ -1595,6 +1643,13 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   return (
     <main className="page student-page">
       <PageBack onClick={() => view === "home" ? onExit() : setView("home")} />
+      {followupDemoNotification && (
+        <section className="student-followup-notification" role="status" aria-live="polite">
+          <div className="student-notification-head"><b>NH 농심튜터</b><time>{new Date(followupDemoNotification.createdAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</time><button onClick={() => setFollowupDemoNotification(null)} aria-label="현업활용도 조사 알림 닫기">×</button></div>
+          <p>현업활용도 조사 기간이 되었습니다.<br />교육에서 배운 내용을 현업에 어떻게 활용했는지 알려주세요.</p>
+          <button className="primary compact" onClick={openSurveyFromDemoNotification}>조사 참여하기</button>
+        </section>
+      )}
       <section className="course-hero">
         <div>
           <span className="eyebrow">오늘의 학습 여정</span>
@@ -1754,6 +1809,7 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
       )}
       {view === "survey" && (
         <ActionPanel title="현업 적용도 응답" eyebrow="교육 2개월 후">
+          {surveyDemoPreview && phase !== "transfer" && <div className="survey-demo-preview-badge">시연용 미리보기</div>}
           <div className="survey-notice">
             <b>교육은 아직 끝나지 않았습니다.</b>
             <span>배운 것을 현업에 적용하면서 막힌 점이 있다면 알려주세요. 다음 교육과 지원을 개선하는 데 활용하겠습니다.</span>
@@ -2017,13 +2073,10 @@ function StudentReentryCard({ course, student, phase, onOpenSurvey }) {
   return (
     <section className="reentry-card">
       <div>
-        <span className="eyebrow">2개월 후 현업활용도 조사 안내</span>
-        <h3>알림으로 다시 안내됩니다</h3>
-        <p>향후 알림 기능이 연결되면, 교육 종료 2개월 후 과정코드와 접속 링크가 함께 안내됩니다.</p>
-        <p>응답 내용은 실명으로 공개되지 않으며, 제출 여부만 재안내와 중복 응답 방지를 위해 확인될 수 있습니다.</p>
-        <p className="demo-compression-note">실제 서비스에서는 교육종료일 +2개월에 예약 발송됩니다. 본 화면은 시연을 위해 10초로 압축한 데모입니다.</p>
-        <p>현재 화면의 정보는 확인용입니다. 별도로 외우거나 저장하지 않아도 됩니다.</p>
-        <small>과정코드: {course.code} · 이름: {student.name || student.studentName}</small>
+        <h3>2개월 후 현업활용도 조사</h3>
+        <p>교육 종료 2개월 후 알림으로 다시 안내합니다.<br />알림을 누르면 조사 화면으로 바로 이동합니다.</p>
+        <small>알림 예정일 · {formatKoreanDate(getTransferDate(course))}</small>
+        <small>시연 모드 · 10초 뒤 교육생 화면에 알림을 표시합니다.</small>
         {phase === "transfer" && (
           <button className="secondary compact followup-demo-link" onClick={onOpenSurvey}>현업활용도 조사로 이동</button>
         )}
@@ -2355,6 +2408,8 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
     activeTabRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   }, [tab]);
 
+  useEffect(() => () => clearTimeout(pushTimer.current), []);
+
   const navigate = (target) => setTab(target);
   const runAnalysis = (kind = "all") => {
     if (!analysisEvidenceCount(filteredCourse)) {
@@ -2453,19 +2508,34 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
     notify(enabled ? `${selectedClass.name} 교육생에게 보고 훈련을 열었습니다.` : `${selectedClass.name} 보고 훈련을 종료했습니다.`);
   };
 
+  const sendFollowupDemoNotification = () => {
+    const payload = {
+      id: uid("followup-demo"),
+      courseCode: course.code,
+      title: "NH 농심튜터",
+      message: "현업활용도 조사 기간이 되었습니다.",
+      createdAt: now(),
+      demo: true,
+    };
+    const saved = safeSetItem(FOLLOWUP_DEMO_NOTIFICATION_KEY, JSON.stringify(payload));
+    if (saved) window.dispatchEvent(new CustomEvent(FOLLOWUP_DEMO_EVENT, { detail: payload }));
+    if (!saved) notify("시연 알림을 저장하지 못했습니다. 브라우저 저장 공간을 확인해주세요.");
+    return saved;
+  };
+
   const startPushDemo = () => {
     clearTimeout(pushTimer.current);
     setPushStatus("waiting");
-    pushTimer.current = setTimeout(() => setPushStatus("arrived"), 10000);
+    pushTimer.current = setTimeout(() => {
+      const sent = sendFollowupDemoNotification();
+      setPushStatus(sent ? "arrived" : "idle");
+      if (sent) notify("교육생 탭에 시연용 현업활용도 조사 알림을 보냈습니다.");
+    }, 10000);
     notify("10초 뒤 사후조사 알림이 도착합니다.");
   };
 
   const openFollowupSurveyDemo = () => {
-    const participant = (course.participants || [])[0];
-    const followupUrl = participant?.reentryToken
-      ? `${personalFollowupLink(participant.reentryToken)}#survey`
-      : `/?role=student&code=${encodeURIComponent(course.code)}#survey`;
-    window.location.href = followupUrl;
+    if (sendFollowupDemoNotification()) notify("교육생 탭에 시연용 알림을 다시 보냈습니다.");
   };
 
   const registerCourse = () => {
@@ -2697,13 +2767,14 @@ function FollowupPushDemo({ status, onStart, onOpen }) {
         <span className="eyebrow">사후조사 알림 데모</span>
         <h3>현업활용도 조사 알림 시연</h3>
         <p className="demo-compression-note">실제 서비스에서는 교육종료일 +2개월에 예약 발송됩니다. 본 화면은 시연을 위해 10초로 압축한 데모입니다.</p>
-        <p className="demo-compression-note">응답 내용은 실명으로 공개되지 않고, 제출 여부만 재안내와 중복 응답 방지를 위해 확인됩니다.</p>
+        {status === "waiting" && <p className="followup-demo-status">교육생 화면으로 알림을 준비하고 있습니다.</p>}
+        {status === "arrived" && <p className="followup-demo-status arrived">교육생 화면에 시연용 알림을 보냈습니다.</p>}
       </div>
       <div className="followup-demo-actions">
-        <button className="secondary compact" onClick={onStart}>{status === "waiting" ? "알림 대기 중" : "10초 데모 시작"}</button>
+        <button className="secondary compact" disabled={status === "waiting"} onClick={onStart}>{status === "waiting" ? "알림 대기 중" : "10초 데모 시작"}</button>
         {status === "arrived" && (
           <button className="primary compact followup-notification-card" onClick={onOpen}>
-            [NH 농심튜터] 현업활용도 조사 알림 도착 · 클릭해서 설문 열기
+            알림 다시 보내기
           </button>
         )}
       </div>
@@ -3234,36 +3305,88 @@ function BoardLightbox({ item, onClose }) {
 }
 
 function RoundView({ round, onReact }) {
+  const boardRef = useRef(null);
+  const detailsRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const participantLabel = (item) => round.anonymous ? "익명" : item.by;
   const typeBadge = round.anonymous ? " · 🙈 익명" : "";
+
+  useEffect(() => {
+    if (detailsRef.current) detailsRef.current.open = true;
+    const syncFullscreenState = () => setIsFullscreen(document.fullscreenElement === boardRef.current);
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreenState);
+  }, []);
+
+  useEffect(() => {
+    if (!isFullscreen) return undefined;
+    const handleEscape = (event) => {
+      if (event.key === "Escape" && !document.fullscreenElement) setIsFullscreen(false);
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [isFullscreen]);
+
+  const openFullscreen = async () => {
+    if (detailsRef.current) detailsRef.current.open = true;
+    try {
+      if (boardRef.current?.requestFullscreen) {
+        await boardRef.current.requestFullscreen();
+      }
+      setIsFullscreen(true);
+    } catch (error) {
+      console.warn("전체화면 전환을 사용할 수 없어 화면 확장 모드로 표시합니다.", error);
+      setIsFullscreen(true);
+    }
+  };
+
+  const closeFullscreen = async () => {
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen();
+    } catch (error) {
+      console.warn("전체화면 종료 중 오류가 발생했습니다.", error);
+    } finally {
+      setIsFullscreen(false);
+    }
+  };
+
+  const roundHeader = (questionTypeLabel) => (
+    <>
+      <div className="round-title">
+        <span>{questionTypeLabel}{round.scope === "class" ? ` · ${round.classId?.replace("class-", "")}반` : " · 전체 반"}{typeBadge}</span>
+        <h3>{round.prompt}</h3>
+        <div className="round-title-actions">
+          <b>응답 {round.items.length}명</b>
+          {!isFullscreen && <button className="fullscreen-board-button" onClick={openFullscreen} aria-label="전체 답변판 전체화면 보기">전체화면 보기</button>}
+        </div>
+      </div>
+      {isFullscreen && <button className="fullscreen-exit-button" onClick={closeFullscreen} aria-label="전체화면 종료">전체화면 종료</button>}
+    </>
+  );
+
   if (round.questionType === "objective") {
     const counts = (round.options || []).map((option) => ({
       option,
       count: round.items.filter((item) => item.choice === option || item.text === option).length,
     }));
     const max = Math.max(1, ...counts.map((item) => item.count));
-    const diagnosis = analyzeQuestionResponses(round);
     const questionTypeLabel = "객관식";
     return (
-      <div className="round objective-round">
-        <div className="round-title"><span>{questionTypeLabel}{round.scope === "class" ? ` · ${round.classId?.replace("class-", "")}반` : " · 전체 반"}{typeBadge}</span><h3>{round.prompt}</h3><b>응답 {round.items.length}명</b></div>
-        <details className="mobile-details"><summary>전체 응답과 분석 보기</summary>
+      <div ref={boardRef} className={`round objective-round${isFullscreen ? " fullscreen-response-board" : ""}`}>
+        {roundHeader(questionTypeLabel)}
+        <details ref={detailsRef} className="mobile-details"><summary>전체 응답 {round.items.length}건 보기</summary>
+        <div className="response-wall-head"><b>전체 답변판</b><span>객관식 응답을 항목별로 집계합니다.</span></div>
         <div className="choice-results">{counts.map((item) => <div key={item.option}><div><span>{item.option}</span><b>{item.count}명</b></div><i><em style={{ width: `${item.count / max * 100}%` }} /></i></div>)}</div>
-        <div className="question-diagnosis">
-          <div className="diagnosis-stats"><Stat label="이해 양호 응답" value={`${diagnosis.good}건`} /><Stat label="오개념 가능 응답" value={`${diagnosis.misconception}건`} /><Stat label="추가 설명 필요" value={`${diagnosis.needHelp}건`} /></div>
-          <div className="diagnosis-guidance"><span className="eyebrow">AI 추천 개입 문장</span><p>{diagnosis.intervention}</p><b>강사가 던질 후속 질문</b>{diagnosis.followups.map((question) => <div key={question}>“{question}”</div>)}</div>
-        </div>
         </details>
       </div>
     );
   }
   const visibleItems = [...round.items].sort((a, b) => reactionScore(b) - reactionScore(a)).slice(0, 30);
-  const diagnosis = analyzeQuestionResponses(round);
   const questionTypeLabel = "주관식";
   return (
-    <div className="round">
-      <div className="round-title"><span>{questionTypeLabel}{round.scope === "class" ? ` · ${round.classId?.replace("class-", "")}반` : " · 전체 반"}{typeBadge}</span><h3>{round.prompt}</h3><b>응답 {round.items.length}명</b></div>
-      <details className="mobile-details"><summary>전체 응답 {round.items.length}건 보기</summary>
+    <div ref={boardRef} className={`round${isFullscreen ? " fullscreen-response-board" : ""}`}>
+      {roundHeader(questionTypeLabel)}
+      <details ref={detailsRef} className="mobile-details"><summary>전체 응답 {round.items.length}건 보기</summary>
       <div className="response-wall-head"><b>전체 답변판</b><span>최대 30명의 답변을 한 화면에서 함께 봅니다.</span></div>
       <div className="response-wall">{visibleItems.map((item, index) => (
         <article className="response-wall-item" key={item.id}>
@@ -3276,10 +3399,6 @@ function RoundView({ round, onReact }) {
       ))}</div>
       {!visibleItems.length && <div className="board-empty">교육생 답변을 기다리고 있습니다.</div>}
       {round.items.length > 30 && <p className="response-limit-note">최근 공감순 30개를 표시하고 있습니다. 전체 응답 수는 {round.items.length}명입니다.</p>}
-      <div className="question-diagnosis">
-        <div className="diagnosis-stats"><Stat label="이해 양호 응답" value={`${diagnosis.good}건`} /><Stat label="오개념 가능 응답" value={`${diagnosis.misconception}건`} /><Stat label="추가 설명 필요" value={`${diagnosis.needHelp}건`} /></div>
-        <div className="diagnosis-guidance"><span className="eyebrow">AI 추천 개입 문장</span><p>{diagnosis.intervention}</p><b>강사가 던질 후속 질문</b>{diagnosis.followups.map((question) => <div key={question}>“{question}”</div>)}</div>
-      </div>
       </details>
     </div>
   );
