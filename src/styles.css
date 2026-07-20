@@ -1426,17 +1426,19 @@ input:focus, textarea:focus, select:focus {
 .entry-shell input:not([type="checkbox"]),
 .entry-shell textarea {
   border-radius: 15px;
-  color: var(--cream);
-  background: rgba(245,242,230,.06);
+  color: #213527;
+  background: #edeee8;
   border: 1px solid rgba(167,187,160,.26);
   box-shadow: none;
 }
 .entry-shell input:not([type="checkbox"])::placeholder,
-.entry-shell textarea::placeholder { color: rgba(239,234,217,.4); }
+.entry-shell textarea::placeholder { color: #7c877f; opacity: 1; }
 .entry-shell input:not([type="checkbox"]):focus,
 .entry-shell textarea:focus {
-  border-color: var(--olive);
-  box-shadow: 0 0 0 3px rgba(138,154,91,.18);
+  color: #213527;
+  background: #f7f6ef;
+  border-color: #9fb066;
+  box-shadow: 0 0 0 3px rgba(159,176,102,.22);
 }
 .entry-shell .professor-entry-note,
 .entry-shell .demo-hint,
