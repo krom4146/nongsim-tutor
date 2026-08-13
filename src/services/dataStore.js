@@ -1,5 +1,22 @@
-import { CURRENT_SCHEMA_VERSION, migrate, normalizeCourse } from "./localStorageRepository";
-import { notifyCourseChanged } from "./realtimeBridge";
+import { CURRENT_SCHEMA_VERSION, migrate, normalizeCourse } from "./localStorageRepository.js";
+import { notifyCourseChanged } from "./realtimeBridge.js";
+
+/*
+ * Storage schema contract (Supabase table design draft)
+ *
+ * course: code, type, name, cohort, startDate, endDate, transferDate,
+ *         classes[], participants[], schemaVersion
+ * goal: id, participantId, name, classId, className, text, createdAt
+ * round: id, kind("poll" | "board"), prompt, anonymous, questionIntent,
+ *        items[], createdAt
+ * roundItem: id, by, text | url, reactions{}, createdAt
+ * survey: id, participantId, classId, className, likert[], barriers[],
+ *         applied, support, submittedAt (no name: anonymous response content)
+ * mission: id, participantId, text, elements{when, what, how},
+ *          missionCheckpoints[], createdAt
+ *
+ * Every entity uses id and createdAt for database identity and ordering.
+ */
 
 const ACTIVE_COURSE_KEY = "nongsim-course-v3";
 const COURSES_KEY = "nongsim-courses-v3";
@@ -39,8 +56,9 @@ function readJson(key, fallback = null) {
 
 export async function getCourses() {
   const saved = readJson(COURSES_KEY, []);
-  if (!Array.isArray(saved)) return [];
-  return saved.map(migrate).filter(Boolean).map(normalizeCourse);
+  if (Array.isArray(saved) && saved.length) return saved.map(migrate).filter(Boolean).map(normalizeCourse);
+  const activeCourse = migrate(readJson(ACTIVE_COURSE_KEY));
+  return activeCourse ? [normalizeCourse(activeCourse)] : [];
 }
 
 export async function getCourse(code) {

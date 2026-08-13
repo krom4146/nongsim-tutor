@@ -1,6 +1,9 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { getCollection, getCourses, saveCourses as persistCourses, setActiveCourseCode, setCollection } from "./services/dataStore";
+import { subscribeCourse } from "./services/realtimeBridge";
+import { putImage } from "./services/fileStore";
 
 /* 단일 파일 구조 유지: 기존 내부 모듈 함수와 mock 데이터를 main.jsx 안에 포함합니다. */
 
@@ -232,19 +235,6 @@ const DEFAULT_CLASS_ID = "class-1";
 const DEFAULT_CLASS_NAME = "1반";
 const STORAGE_WARNING_MESSAGE = "저장 공간이 가득 찼습니다. 오래된 장표 이미지를 정리하거나 새 과정으로 시작해 주세요.";
 
-function safeSetItem(key, value) {
-  try {
-    localStorage.setItem(key, value);
-    return true;
-  } catch (error) {
-    console.warn("localStorage 저장 실패:", error);
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("nongsim-storage-warning", { detail: { message: STORAGE_WARNING_MESSAGE } }));
-    }
-    return false;
-  }
-}
-
 function createClasses(classCount = 1) {
   const safeCount = Math.min(4, Math.max(1, Number(classCount) || 1));
   return Array.from({ length: safeCount }, (_, index) => ({
@@ -344,18 +334,7 @@ function participantCountForClass(course, classId = "all") {
   return students.filter((item) => matchesClass(item, classId)).length;
 }
 
-/* ---- inlined from src\services\localStorageRepository.js ---- */
-const ACTIVE_COURSE_KEY = "nongsim-course-v3";
-const COURSES_KEY = "nongsim-courses-v3";
-const CURRENT_SCHEMA_VERSION = 1;
-
-function migrate(saved) {
-  if (!saved) return null;
-  if (!saved.schemaVersion) return { ...saved, schemaVersion: CURRENT_SCHEMA_VERSION };
-  if (saved.schemaVersion > CURRENT_SCHEMA_VERSION) return null;
-  return saved;
-}
-
+/* ---- course normalization and legacy-data compatibility ---- */
 function normalizeCourse(course) {
   const legacyPrompt = "현장에서 실수를 발견했을 때 가장 먼저 해야 할 행동은 무엇인가요?";
   const baseCourse = {
@@ -404,42 +383,6 @@ function normalizeCourse(course) {
   });
   return normalizeClassCourse({ ...baseCourse, participants });
 }
-
-function loadActiveCourse() {
-  try {
-    const saved = localStorage.getItem(ACTIVE_COURSE_KEY);
-    const migrated = saved ? migrate(JSON.parse(saved)) : seedCourse;
-    return normalizeCourse(migrated ? { ...seedCourse, ...migrated } : seedCourse);
-  } catch {
-    return normalizeCourse(seedCourse);
-  }
-}
-
-function saveActiveCourse(course) {
-  safeSetItem(ACTIVE_COURSE_KEY, JSON.stringify({ ...course, schemaVersion: CURRENT_SCHEMA_VERSION }));
-}
-
-function loadCourses() {
-  try {
-    const saved = localStorage.getItem(COURSES_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length) {
-        const migrated = parsed.map(migrate).filter(Boolean);
-        if (migrated.length) return migrated.map(normalizeCourse);
-      }
-    }
-    return [loadActiveCourse()];
-  } catch {
-    return [normalizeCourse(seedCourse)];
-  }
-}
-
-function saveCourses(courses) {
-  safeSetItem(COURSES_KEY, JSON.stringify(courses.map((course) => ({ ...course, schemaVersion: CURRENT_SCHEMA_VERSION }))));
-}
-
-const storageKeys = { activeCourse: ACTIVE_COURSE_KEY, courses: COURSES_KEY };
 
 /* ---- inlined from src\services\analysisMockService.js ---- */
 function buildAnalysis(course, kind = "all") {
@@ -903,26 +846,6 @@ const STAMP_TYPES = [
   { type: "action", label: "실천 다짐 스탬프", shortLabel: "실천 다짐", icon: "✍️", meaning: "교육 내용을 현업에서 실천할 방법을 구체화" },
 ];
 
-const STAMP_KEY = "ideologyStamps";
-
-function loadIdeologyStamps() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STAMP_KEY) || "[]");
-    return Array.isArray(saved) ? saved.map((item) => ({
-      ...item,
-      classId: item.classId || "class-1",
-      className: item.className || "1반",
-      status: item.status || "active",
-    })) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveIdeologyStamps(items) {
-  safeSetItem(STAMP_KEY, JSON.stringify(items));
-}
-
 function stampCounts(items, participantId, studentName) {
   return STAMP_TYPES.reduce((counts, stamp) => ({
     ...counts,
@@ -951,7 +874,6 @@ const SPLASH_VISIBLE_DURATION = 2200;
 const SPLASH_FADE_DURATION = 600;
 const REDUCED_MOTION_SPLASH_DURATION = 1200;
 const REDUCED_MOTION_FADE_DURATION = 100;
-const STUDENT_PROFILE_KEY = "nongsim-student-profiles-v1";
 const FOLLOWUP_DEMO_NOTIFICATION_KEY = "nongsim-followup-demo-notification";
 const FOLLOWUP_DEMO_EVENT = "nongsim-followup-demo-notification";
 
@@ -960,33 +882,22 @@ function followupTokenFromLocation() {
   return pathMatch?.[1] || new URLSearchParams(window.location.search).get("followup") || "";
 }
 
-function loadStoredStudentProfiles() {
-  try {
-    return JSON.parse(localStorage.getItem(STUDENT_PROFILE_KEY) || "[]");
-  } catch {
-    return [];
-  }
-}
-
-function rememberStudentProfile(profile) {
-  const profiles = loadStoredStudentProfiles().filter((item) => item.courseCode !== profile.courseCode || item.participantId !== profile.participantId);
-  safeSetItem(STUDENT_PROFILE_KEY, JSON.stringify([...profiles, profile]));
+async function rememberStudentProfile(profile) {
+  const stored = await getCollection("studentProfiles");
+  const profiles = (Array.isArray(stored) ? stored : []).filter((item) => item.courseCode !== profile.courseCode || item.participantId !== profile.participantId);
+  return setCollection("studentProfiles", [...profiles, profile]);
 }
 
 function App() {
   const params = new URLSearchParams(window.location.search);
   const presetRole = params.get("role");
   const presetCode = params.get("code") || "";
+  const initialCourseRef = useRef(normalizeCourse(seedCourse));
+  const [storageReady, setStorageReady] = useState(false);
   const [splashPhase, setSplashPhase] = useState("visible");
-  const [courses, setCourses] = useState(loadCourses);
-  const [course, setCourseState] = useState(() => {
-    const savedCourses = loadCourses();
-    return savedCourses.find((item) => item.code === presetCode.toUpperCase()) || savedCourses[0];
-  });
-  const [role, setRole] = useState(() => {
-    const matched = loadCourses().some((item) => item.code === presetCode.toUpperCase());
-    return presetRole === "professor" && matched ? "professor" : null;
-  });
+  const [courses, setCourses] = useState(() => [initialCourseRef.current]);
+  const [course, setCourseState] = useState(initialCourseRef.current);
+  const [role, setRole] = useState(null);
   const [code, setCode] = useState(presetCode);
   const [studentName, setStudentName] = useState("");
   const [reentryCode, setReentryCode] = useState("");
@@ -999,7 +910,7 @@ function App() {
   const [showProfessorLogin, setShowProfessorLogin] = useState(false);
   const [professorPassword, setProfessorPassword] = useState("");
   const [professorStartTab, setProfessorStartTab] = useState("dashboard");
-  const [ideologyStamps, setIdeologyStamps] = useState(loadIdeologyStamps);
+  const [ideologyStamps, setIdeologyStamps] = useState([]);
   const entryCourse = courses.find((item) => item.code === code.trim().toUpperCase());
 
   useEffect(() => {
@@ -1015,31 +926,49 @@ function App() {
   }, []);
 
   useEffect(() => {
-    saveActiveCourse(course);
-  }, [course]);
+    let active = true;
+    Promise.all([getCourses(), getCollection("stamps")]).then(([savedCourses, savedStamps]) => {
+      if (!active) return;
+      const nextCourses = savedCourses.length ? savedCourses : [initialCourseRef.current];
+      const selected = nextCourses.find((item) => item.code === presetCode.toUpperCase()) || nextCourses[0];
+      setCourses(nextCourses);
+      setCourseState(selected);
+      setIdeologyStamps(Array.isArray(savedStamps) ? savedStamps.map((item) => ({
+        ...item,
+        classId: item.classId || "class-1",
+        className: item.className || "1반",
+        status: item.status || "active",
+      })) : []);
+      if (presetRole === "professor" && nextCourses.some((item) => item.code === presetCode.toUpperCase())) setRole("professor");
+      setStorageReady(true);
+    });
+    return () => { active = false; };
+  }, [presetCode, presetRole]);
 
   useEffect(() => {
-    saveCourses(courses);
-  }, [courses]);
+    if (!storageReady) return;
+    persistCourses(courses).then((result) => {
+      if (result.ok && course?.code) setActiveCourseCode(course.code);
+    });
+  }, [courses, course?.code, storageReady]);
 
   useEffect(() => {
-    saveIdeologyStamps(ideologyStamps);
-  }, [ideologyStamps]);
+    if (!storageReady) return;
+    void setCollection("stamps", ideologyStamps);
+  }, [ideologyStamps, storageReady]);
 
   useEffect(() => {
-    const syncCourses = (event) => {
-      if (event.key !== storageKeys.courses || !event.newValue) return;
-      try {
-        const nextCourses = JSON.parse(event.newValue);
-        setCourses(nextCourses);
-        setCourseState((current) => nextCourses.find((item) => item.code === current.code) || current);
-      } catch {
-        // 잘못된 외부 저장값은 무시합니다.
-      }
-    };
-    window.addEventListener("storage", syncCourses);
-    return () => window.removeEventListener("storage", syncCourses);
-  }, []);
+    if (!course?.code || !storageReady) return undefined;
+    return subscribeCourse(course.code, async () => {
+      const nextCourses = await getCourses();
+      if (!nextCourses.length) return;
+      setCourses((current) => JSON.stringify(current) === JSON.stringify(nextCourses) ? current : nextCourses);
+      setCourseState((current) => {
+        const nextCourse = nextCourses.find((item) => item.code === current.code);
+        return nextCourse && JSON.stringify(nextCourse) !== JSON.stringify(current) ? nextCourse : current;
+      });
+    });
+  }, [course?.code, storageReady]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1062,7 +991,7 @@ function App() {
     selectCourse(matchedCourse);
     setStudentProfile({ ...participant, lastAccessAt: now() });
     setRole("student");
-    rememberStudentProfile({ ...participant, courseCode: matchedCourse.code });
+    void rememberStudentProfile({ ...participant, courseCode: matchedCourse.code });
   }, [courses, studentProfile]);
 
   const buildStudentProfile = (matchedCourse, classInfo, existingParticipant = null) => {
@@ -1108,7 +1037,7 @@ function App() {
     setCourses((items) => items.map((item) => item.code === nextCourse.code ? nextCourse : item));
     selectCourse(nextCourse);
     setStudentProfile(profile);
-    rememberStudentProfile(profile);
+    void rememberStudentProfile(profile);
   };
 
   const setCourse = (update) => {
@@ -1175,7 +1104,7 @@ function App() {
     setRole("student");
   };
 
-  const enter = (nextRole) => {
+  const enter = async (nextRole) => {
     const enteredCode = code.trim().toUpperCase();
     if (nextRole === "professor" && !enteredCode) {
       setShowProfessorLogin(true);
@@ -1200,7 +1129,8 @@ function App() {
       const cleanName = studentName.trim();
       const sameNameParticipants = (matchedCourse.participants || []).filter((item) => (item.name || item.studentName) === cleanName);
       const enteredReentry = reentryCode.trim();
-      const storedProfile = loadStoredStudentProfiles().find((item) => item.courseCode === matchedCourse.code && (item.name || item.studentName) === cleanName);
+      const storedProfiles = await getCollection("studentProfiles");
+      const storedProfile = (Array.isArray(storedProfiles) ? storedProfiles : []).find((item) => item.courseCode === matchedCourse.code && (item.name || item.studentName) === cleanName);
       const existingParticipant = enteredReentry
         ? (matchedCourse.participants || []).find((item) => [item.participantCode, item.reentryToken].includes(enteredReentry))
         : storedProfile
@@ -1440,8 +1370,9 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   }, [phase, mySurvey]);
 
   useEffect(() => {
+    let active = true;
     const applyDemoNotification = (payload) => {
-      if (!payload || payload.courseCode !== course.code) return;
+      if (!active || !payload || payload.courseCode !== course.code) return;
       setFollowupDemoNotification(payload);
     };
     const handleDemoNotification = (event) => {
@@ -1453,16 +1384,14 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
       }
     };
     const handleSameTabDemoNotification = (event) => applyDemoNotification(event.detail);
-    try {
-      const saved = JSON.parse(localStorage.getItem(FOLLOWUP_DEMO_NOTIFICATION_KEY) || "null");
+    getCollection("demoNotification").then((saved) => {
       const isRecent = saved?.createdAt && Date.now() - new Date(saved.createdAt).getTime() < 5 * 60 * 1000;
       if (isRecent) applyDemoNotification(saved);
-    } catch {
-      // 저장된 시연 알림을 읽을 수 없으면 새 알림을 기다립니다.
-    }
+    });
     window.addEventListener("storage", handleDemoNotification);
     window.addEventListener(FOLLOWUP_DEMO_EVENT, handleSameTabDemoNotification);
     return () => {
+      active = false;
       window.removeEventListener("storage", handleDemoNotification);
       window.removeEventListener(FOLLOWUP_DEMO_EVENT, handleSameTabDemoNotification);
     };
@@ -2278,37 +2207,6 @@ function JobChoiceField({ number, title, options, value, onChange }) {
   return <fieldset className="job-choice-field"><legend>{number}. {title}</legend><div>{options.map((option) => <button type="button" key={option.value} className={value === option.value ? "selected" : ""} onClick={() => onChange(option.value)}>{option.label}</button>)}</div></fieldset>;
 }
 
-function resizeImageFile(file, maxSize = 1280, quality = 0.8) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("이미지를 읽지 못했습니다."));
-    reader.onload = () => {
-      const originalDataUrl = reader.result;
-      const image = new Image();
-      image.onerror = () => reject(new Error("이미지를 불러오지 못했습니다."));
-      image.onload = () => {
-        try {
-          const { naturalWidth: width, naturalHeight: height } = image;
-          if (!width || !height) return reject(new Error("이미지 크기를 확인하지 못했습니다."));
-          if (Math.max(width, height) <= maxSize) return resolve(originalDataUrl);
-          const ratio = maxSize / Math.max(width, height);
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.round(width * ratio);
-          canvas.height = Math.round(height * ratio);
-          const context = canvas.getContext("2d");
-          if (!context) return reject(new Error("이미지 변환을 준비하지 못했습니다."));
-          context.drawImage(image, 0, 0, canvas.width, canvas.height);
-          resolve(canvas.toDataURL("image/jpeg", quality));
-        } catch (error) {
-          reject(error);
-        }
-      };
-      image.src = originalDataUrl;
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
 function StudentBoardArea({ rounds, setCourse, student, notify }) {
   const participantId = student?.id || "student-demo";
   const classId = student?.classId || "class-1";
@@ -2319,7 +2217,8 @@ function StudentBoardArea({ rounds, setCourse, student, notify }) {
     const team = (teamNames[round.id] || "").trim();
     if (!team) return notify("팀명을 먼저 입력해주세요.");
     try {
-      const imageUrl = await resizeImageFile(file);
+      const imageResult = await putImage(file, { maxSize: 1280, quality: 0.8, courseId: round.courseId, roundId: round.id });
+      if (!imageResult.ok) throw new Error(imageResult.error);
       setCourse((current) => ({
         ...current,
         rounds: current.rounds.map((item) => item.id === round.id ? {
@@ -2330,7 +2229,7 @@ function StudentBoardArea({ rounds, setCourse, student, notify }) {
             by: team,
             classId,
             className,
-            imageUrl,
+            url: imageResult.url,
             text: `${team} 장표 업로드`,
             reactions: {},
             createdAt: now(),
@@ -2357,7 +2256,7 @@ function StudentBoardArea({ rounds, setCourse, student, notify }) {
               {!mine ? <>
                 <input value={teamNames[round.id] || ""} onChange={(e) => setTeamNames({ ...teamNames, [round.id]: e.target.value })} placeholder="팀명" />
                 <label className="secondary board-file-button">장표 사진 선택<input type="file" accept="image/*" onChange={(e) => upload(round, e.target.files?.[0])} /></label>
-              </> : mine.imageUrl && <img src={mine.imageUrl} alt={`${mine.by} 장표`} />}
+              </> : (mine.url || mine.imageUrl) && <img src={mine.url || mine.imageUrl} alt={`${mine.by} 장표`} />}
             </article>
           );
         })}
@@ -2521,7 +2420,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
     notify(enabled ? `${selectedClass.name} 교육생에게 보고 훈련을 열었습니다.` : `${selectedClass.name} 보고 훈련을 종료했습니다.`);
   };
 
-  const sendFollowupDemoNotification = () => {
+  const sendFollowupDemoNotification = async () => {
     const payload = {
       id: uid("followup-demo"),
       courseCode: course.code,
@@ -2530,25 +2429,25 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
       createdAt: now(),
       demo: true,
     };
-    const saved = safeSetItem(FOLLOWUP_DEMO_NOTIFICATION_KEY, JSON.stringify(payload));
-    if (saved) window.dispatchEvent(new CustomEvent(FOLLOWUP_DEMO_EVENT, { detail: payload }));
-    if (!saved) notify("시연 알림을 저장하지 못했습니다. 브라우저 저장 공간을 확인해주세요.");
-    return saved;
+    const result = await setCollection("demoNotification", payload);
+    if (result.ok) window.dispatchEvent(new CustomEvent(FOLLOWUP_DEMO_EVENT, { detail: payload }));
+    if (!result.ok) notify("시연 알림을 저장하지 못했습니다. 브라우저 저장 공간을 확인해주세요.");
+    return result.ok;
   };
 
   const startPushDemo = () => {
     clearTimeout(pushTimer.current);
     setPushStatus("waiting");
-    pushTimer.current = setTimeout(() => {
-      const sent = sendFollowupDemoNotification();
+    pushTimer.current = setTimeout(async () => {
+      const sent = await sendFollowupDemoNotification();
       setPushStatus(sent ? "arrived" : "idle");
       if (sent) notify("교육생 탭에 시연용 현업활용도 조사 알림을 보냈습니다.");
     }, 10000);
     notify("10초 뒤 사후조사 알림이 도착합니다.");
   };
 
-  const openFollowupSurveyDemo = () => {
-    if (sendFollowupDemoNotification()) notify("교육생 탭에 시연용 알림을 다시 보냈습니다.");
+  const openFollowupSurveyDemo = async () => {
+    if (await sendFollowupDemoNotification()) notify("교육생 탭에 시연용 알림을 다시 보냈습니다.");
   };
 
   const registerCourse = () => {
@@ -3288,7 +3187,7 @@ function ProfessorBoardGallery({ rounds, selectedId, onSelect, onExpand, onAnaly
           {selected.items.map((item) => (
             <article key={item.id}>
               <button className="board-image-button" onClick={() => onExpand(item)} aria-label={`${item.by} 팀 장표 전체화면으로 보기`}>
-                {item.imageUrl ? <img src={item.imageUrl} alt={`${item.by} 장표`} /> : <div>이미지 없음</div>}
+                {(item.url || item.imageUrl) ? <img src={item.url || item.imageUrl} alt={`${item.by} 장표`} /> : <div>이미지 없음</div>}
                 <span>전체화면 발표 ↗</span>
               </button>
               <div><h4>{item.by} <em className="class-tag">{item.className || "1반"}</em></h4><p>{new Date(item.createdAt).toLocaleString("ko-KR")}</p><button className="ghost" onClick={() => onAnalyze(selected, item)}>이 팀 장표 AI 분석</button></div>
@@ -3312,7 +3211,7 @@ function BoardLightbox({ item, onClose }) {
   return (
     <div className="board-lightbox" onClick={onClose}>
       <button onClick={onClose} aria-label="장표 전체화면 닫기">× 닫기</button>
-      <div><h2>{item.by} 팀 장표</h2>{item.imageUrl && <img src={item.imageUrl} alt={`${item.by} 장표 전체화면`} />}</div>
+      <div><h2>{item.by} 팀 장표</h2>{(item.url || item.imageUrl) && <img src={item.url || item.imageUrl} alt={`${item.by} 장표 전체화면`} />}</div>
     </div>
   );
 }

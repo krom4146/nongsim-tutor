@@ -1,9 +1,6 @@
-import { seedCourse } from "../data";
-import { generateParticipantCode, generateParticipantId, generateReentryToken, getTransferDate, now, personalFollowupLink } from "../utils";
-import { normalizeClassCourse } from "./classManagementService";
+import { generateParticipantCode, generateParticipantId, generateReentryToken, getTransferDate, now, personalFollowupLink } from "../utils.js";
+import { normalizeClassCourse } from "./classManagementService.js";
 
-const ACTIVE_COURSE_KEY = "nongsim-course-v3";
-const COURSES_KEY = "nongsim-courses-v3";
 export const CURRENT_SCHEMA_VERSION = 1;
 
 export function migrate(saved) {
@@ -15,11 +12,47 @@ export function migrate(saved) {
 
 export function normalizeCourse(course) {
   const legacyPrompt = "현장에서 실수를 발견했을 때 가장 먼저 해야 할 행동은 무엇인가요?";
+  const courseCreatedAt = course.createdAt || now();
+  const withIdentity = (item = {}, index, prefix) => ({
+    ...item,
+    id: item.id || `${prefix}-${item.participantId || index + 1}-${item.createdAt || courseCreatedAt}`,
+    createdAt: item.createdAt || item.submittedAt || courseCreatedAt,
+  });
   const baseCourse = {
     ...course,
+    id: course.id || course.code,
+    createdAt: courseCreatedAt,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     cohort: course.cohort === "신규 과정" ? "" : course.cohort,
     transferDate: getTransferDate(course),
-    rounds: (course.rounds || []).filter((round) => round.prompt !== legacyPrompt),
+    goals: (course.goals || []).map((item, index) => withIdentity(item, index, "goal")),
+    surveys: (course.surveys || []).map((item, index) => {
+      const normalized = withIdentity(item, index, "survey");
+      return { ...normalized, submittedAt: item.submittedAt || normalized.createdAt };
+    }),
+    missions: (course.missions || []).map((item, index) => {
+      const normalized = withIdentity(item, index, "mission");
+      return {
+        ...normalized,
+        text: item.text || item.missionText || "",
+        elements: item.elements || { when: "", what: "", how: "" },
+        missionCheckpoints: item.missionCheckpoints || [],
+      };
+    }),
+    rounds: (course.rounds || [])
+      .filter((round) => round.prompt !== legacyPrompt)
+      .map((round, roundIndex) => {
+        const normalizedRound = withIdentity(round, roundIndex, "round");
+        return {
+          ...normalizedRound,
+          anonymous: Boolean(round.anonymous),
+          questionIntent: round.questionIntent || null,
+          items: (round.items || []).map((item, itemIndex) => ({
+            ...withIdentity(item, itemIndex, `${normalizedRound.id}-item`),
+            url: item.url || item.imageUrl || null,
+          })),
+        };
+      }),
     learningChecks: course.learningChecks || [],
     legacyJobChecks: course.legacyJobChecks || course.learningChecks || [],
     jobSessions: course.jobSessions || [],
@@ -61,39 +94,3 @@ export function normalizeCourse(course) {
   });
   return normalizeClassCourse({ ...baseCourse, participants, schemaVersion: CURRENT_SCHEMA_VERSION });
 }
-
-export function loadActiveCourse() {
-  try {
-    const saved = localStorage.getItem(ACTIVE_COURSE_KEY);
-    const migrated = saved ? migrate(JSON.parse(saved)) : seedCourse;
-    return normalizeCourse(migrated ? { ...seedCourse, ...migrated } : seedCourse);
-  } catch {
-    return normalizeCourse(seedCourse);
-  }
-}
-
-export function saveActiveCourse(course) {
-  localStorage.setItem(ACTIVE_COURSE_KEY, JSON.stringify({ ...course, schemaVersion: CURRENT_SCHEMA_VERSION }));
-}
-
-export function loadCourses() {
-  try {
-    const saved = localStorage.getItem(COURSES_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length) {
-        const migrated = parsed.map(migrate).filter(Boolean);
-        if (migrated.length) return migrated.map(normalizeCourse);
-      }
-    }
-    return [loadActiveCourse()];
-  } catch {
-    return [normalizeCourse(seedCourse)];
-  }
-}
-
-export function saveCourses(courses) {
-  localStorage.setItem(COURSES_KEY, JSON.stringify(courses.map((course) => ({ ...course, schemaVersion: CURRENT_SCHEMA_VERSION }))));
-}
-
-export const storageKeys = { activeCourse: ACTIVE_COURSE_KEY, courses: COURSES_KEY };
