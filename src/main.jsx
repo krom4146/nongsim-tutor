@@ -77,6 +77,7 @@ const promptTemplates = {
 };
 
 const seedCourse = {
+  schemaVersion: 1,
   code: COURSE_CODE,
   type: "newbie",
   name: "2026 신규직원 농협이념·현장실무 과정",
@@ -346,6 +347,14 @@ function participantCountForClass(course, classId = "all") {
 /* ---- inlined from src\services\localStorageRepository.js ---- */
 const ACTIVE_COURSE_KEY = "nongsim-course-v3";
 const COURSES_KEY = "nongsim-courses-v3";
+const CURRENT_SCHEMA_VERSION = 1;
+
+function migrate(saved) {
+  if (!saved) return null;
+  if (!saved.schemaVersion) return { ...saved, schemaVersion: CURRENT_SCHEMA_VERSION };
+  if (saved.schemaVersion > CURRENT_SCHEMA_VERSION) return null;
+  return saved;
+}
 
 function normalizeCourse(course) {
   const legacyPrompt = "현장에서 실수를 발견했을 때 가장 먼저 해야 할 행동은 무엇인가요?";
@@ -399,14 +408,15 @@ function normalizeCourse(course) {
 function loadActiveCourse() {
   try {
     const saved = localStorage.getItem(ACTIVE_COURSE_KEY);
-    return normalizeCourse(saved ? { ...seedCourse, ...JSON.parse(saved) } : seedCourse);
+    const migrated = saved ? migrate(JSON.parse(saved)) : seedCourse;
+    return normalizeCourse(migrated ? { ...seedCourse, ...migrated } : seedCourse);
   } catch {
     return normalizeCourse(seedCourse);
   }
 }
 
 function saveActiveCourse(course) {
-  safeSetItem(ACTIVE_COURSE_KEY, JSON.stringify(course));
+  safeSetItem(ACTIVE_COURSE_KEY, JSON.stringify({ ...course, schemaVersion: CURRENT_SCHEMA_VERSION }));
 }
 
 function loadCourses() {
@@ -414,7 +424,10 @@ function loadCourses() {
     const saved = localStorage.getItem(COURSES_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length) return parsed.map(normalizeCourse);
+      if (Array.isArray(parsed) && parsed.length) {
+        const migrated = parsed.map(migrate).filter(Boolean);
+        if (migrated.length) return migrated.map(normalizeCourse);
+      }
     }
     return [loadActiveCourse()];
   } catch {
@@ -423,7 +436,7 @@ function loadCourses() {
 }
 
 function saveCourses(courses) {
-  safeSetItem(COURSES_KEY, JSON.stringify(courses));
+  safeSetItem(COURSES_KEY, JSON.stringify(courses.map((course) => ({ ...course, schemaVersion: CURRENT_SCHEMA_VERSION }))));
 }
 
 const storageKeys = { activeCourse: ACTIVE_COURSE_KEY, courses: COURSES_KEY };
