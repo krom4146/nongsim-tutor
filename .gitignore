@@ -4,5 +4,5 @@ verify-dist/
 .npm-cache/
 *.log
 .env
-.env.local
+.env.*
 .vscode/

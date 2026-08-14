@@ -1,7 +1,8 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { getCollection, getCourses, saveCourses as persistCourses, setActiveCourseCode, setCollection } from "./services/dataStore";
+import { getCollection, getCourses, saveCourse, setActiveCourseCode, setCollection } from "./services/dataStore";
+import { seedDemoCourse } from "./services/demoCourseSeed";
 import { subscribeCourse } from "./services/realtimeBridge";
 import { putImage } from "./services/fileStore";
 
@@ -913,6 +914,16 @@ function App() {
   const [ideologyStamps, setIdeologyStamps] = useState([]);
   const entryCourse = courses.find((item) => item.code === code.trim().toUpperCase());
 
+  const persistCourse = async (nextCourse) => {
+    const result = await saveCourse(nextCourse);
+    if (!result.ok) {
+      setToast("저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+      return result;
+    }
+    await setActiveCourseCode(nextCourse.code);
+    return result;
+  };
+
   useEffect(() => {
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const visibleDuration = reduceMotion ? REDUCED_MOTION_SPLASH_DURATION : SPLASH_VISIBLE_DURATION;
@@ -927,7 +938,10 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([getCourses(), getCollection("stamps")]).then(([savedCourses, savedStamps]) => {
+    async function loadStoredData() {
+      const seedResult = await seedDemoCourse();
+      if (!seedResult.ok) throw new Error(seedResult.error);
+      const [savedCourses, savedStamps] = await Promise.all([getCourses(), getCollection("stamps")]);
       if (!active) return;
       const nextCourses = savedCourses.length ? savedCourses : [initialCourseRef.current];
       const selected = nextCourses.find((item) => item.code === presetCode.toUpperCase()) || nextCourses[0];
@@ -941,16 +955,15 @@ function App() {
       })) : []);
       if (presetRole === "professor" && nextCourses.some((item) => item.code === presetCode.toUpperCase())) setRole("professor");
       setStorageReady(true);
+    }
+    loadStoredData().catch((error) => {
+      console.warn("과정 데이터를 불러오지 못했습니다.", error);
+      if (!active) return;
+      setToast("과정 데이터를 불러오지 못했습니다. 연결과 환경 설정을 확인해 주세요.");
+      setStorageReady(true);
     });
     return () => { active = false; };
   }, [presetCode, presetRole]);
-
-  useEffect(() => {
-    if (!storageReady) return;
-    persistCourses(courses).then((result) => {
-      if (result.ok && course?.code) setActiveCourseCode(course.code);
-    });
-  }, [courses, course?.code, storageReady]);
 
   useEffect(() => {
     if (!storageReady) return;
@@ -1036,6 +1049,7 @@ function App() {
     };
     setCourses((items) => items.map((item) => item.code === nextCourse.code ? nextCourse : item));
     selectCourse(nextCourse);
+    void persistCourse(nextCourse);
     setStudentProfile(profile);
     void rememberStudentProfile(profile);
   };
@@ -1047,6 +1061,7 @@ function App() {
         const exists = items.some((item) => item.code === next.code);
         return exists ? items.map((item) => item.code === next.code ? next : item) : [...items, next];
       });
+      void persistCourse(next);
       return next;
     });
   };
@@ -1054,11 +1069,13 @@ function App() {
   const selectCourse = (nextCourse) => {
     setCourseState(nextCourse);
     setCode(nextCourse.code);
+    void setActiveCourseCode(nextCourse.code);
   };
 
   const updateRegisteredCourse = (updatedCourse) => {
     setCourses((items) => items.map((item) => item.code === updatedCourse.code ? updatedCourse : item));
     if (course.code === updatedCourse.code) setCourseState(updatedCourse);
+    void persistCourse(updatedCourse);
   };
 
   const deleteRegisteredCourse = (courseCode) => {
