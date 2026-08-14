@@ -1,8 +1,9 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { getCollection, getCourses, saveCourse, setActiveCourseCode, setCollection } from "./services/dataStore";
+import { archiveCourse, getCollection, getCourse, getCourses, saveCourse, setActiveCourseCode, setCollection } from "./services/dataStore";
 import { seedDemoCourse } from "./services/demoCourseSeed";
+import { DATA_MODE } from "./services/supabaseClient";
 import { subscribeCourse } from "./services/realtimeBridge";
 import { putImage } from "./services/fileStore";
 
@@ -895,9 +896,10 @@ function App() {
   const presetCode = params.get("code") || "";
   const initialCourseRef = useRef(normalizeCourse(seedCourse));
   const [storageReady, setStorageReady] = useState(false);
+  const [courseLoadStatus, setCourseLoadStatus] = useState("loading");
   const [splashPhase, setSplashPhase] = useState("visible");
-  const [courses, setCourses] = useState(() => [initialCourseRef.current]);
-  const [course, setCourseState] = useState(initialCourseRef.current);
+  const [courses, setCourses] = useState(() => DATA_MODE === "local" ? [initialCourseRef.current] : []);
+  const [course, setCourseState] = useState(() => DATA_MODE === "local" ? initialCourseRef.current : null);
   const [role, setRole] = useState(null);
   const [code, setCode] = useState(presetCode);
   const [studentName, setStudentName] = useState("");
@@ -912,6 +914,7 @@ function App() {
   const [professorPassword, setProfessorPassword] = useState("");
   const [professorStartTab, setProfessorStartTab] = useState("dashboard");
   const [ideologyStamps, setIdeologyStamps] = useState([]);
+  const [entryPending, setEntryPending] = useState(false);
   const entryCourse = courses.find((item) => item.code === code.trim().toUpperCase());
 
   const persistCourse = async (nextCourse) => {
@@ -943,10 +946,15 @@ function App() {
       if (!seedResult.ok) throw new Error(seedResult.error);
       const [savedCourses, savedStamps] = await Promise.all([getCourses(), getCollection("stamps")]);
       if (!active) return;
-      const nextCourses = savedCourses.length ? savedCourses : [initialCourseRef.current];
-      const selected = nextCourses.find((item) => item.code === presetCode.toUpperCase()) || nextCourses[0];
+      const nextCourses = savedCourses.length
+        ? savedCourses
+        : DATA_MODE === "local"
+          ? [initialCourseRef.current]
+          : [];
+      const selected = nextCourses.find((item) => item.code === presetCode.toUpperCase()) || nextCourses[0] || null;
       setCourses(nextCourses);
       setCourseState(selected);
+      setCourseLoadStatus(nextCourses.length ? "ready" : "empty");
       setIdeologyStamps(Array.isArray(savedStamps) ? savedStamps.map((item) => ({
         ...item,
         classId: item.classId || "class-1",
@@ -959,6 +967,9 @@ function App() {
     loadStoredData().catch((error) => {
       console.warn("과정 데이터를 불러오지 못했습니다.", error);
       if (!active) return;
+      setCourses(DATA_MODE === "local" ? [initialCourseRef.current] : []);
+      setCourseState(DATA_MODE === "local" ? initialCourseRef.current : null);
+      setCourseLoadStatus("error");
       setToast("과정 데이터를 불러오지 못했습니다. 연결과 환경 설정을 확인해 주세요.");
       setStorageReady(true);
     });
@@ -1036,7 +1047,7 @@ function App() {
     };
   };
 
-  const saveStudentToCourse = (matchedCourse, profile, classInfo = null) => {
+  const saveStudentToCourse = async (matchedCourse, profile, classInfo = null) => {
     const exists = (matchedCourse.participants || []).some((item) => (item.participantId || item.id) === profile.participantId);
     const nextCourse = {
       ...matchedCourse,
@@ -1047,11 +1058,14 @@ function App() {
         ? matchedCourse.goals.map((goal) => goal.participantId === profile.participantId && !goal.classId ? { ...goal, classId: classInfo.id, className: classInfo.name } : goal)
         : matchedCourse.goals,
     };
+    const result = await persistCourse(nextCourse);
+    if (!result.ok) return result;
     setCourses((items) => items.map((item) => item.code === nextCourse.code ? nextCourse : item));
-    selectCourse(nextCourse);
-    void persistCourse(nextCourse);
+    setCourseState(nextCourse);
+    setCode(nextCourse.code);
     setStudentProfile(profile);
     void rememberStudentProfile(profile);
+    return result;
   };
 
   const setCourse = (update) => {
@@ -1066,32 +1080,58 @@ function App() {
     });
   };
 
+  const createRegisteredCourse = async (createdCourse) => {
+    const result = await saveCourse(createdCourse);
+    if (!result.ok) {
+      setToast("과정을 등록하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+      return result;
+    }
+    setCourses((items) => [...items.filter((item) => item.code !== createdCourse.code), createdCourse]);
+    setCourseState(createdCourse);
+    setCode(createdCourse.code);
+    setCourseLoadStatus("ready");
+    await setActiveCourseCode(createdCourse.code);
+    return result;
+  };
+
   const selectCourse = (nextCourse) => {
     setCourseState(nextCourse);
     setCode(nextCourse.code);
     void setActiveCourseCode(nextCourse.code);
   };
 
-  const updateRegisteredCourse = (updatedCourse) => {
+  const updateRegisteredCourse = async (updatedCourse) => {
+    const result = await saveCourse(updatedCourse);
+    if (!result.ok) {
+      setToast("과정 정보를 저장하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+      return result;
+    }
     setCourses((items) => items.map((item) => item.code === updatedCourse.code ? updatedCourse : item));
-    if (course.code === updatedCourse.code) setCourseState(updatedCourse);
-    void persistCourse(updatedCourse);
+    if (course?.code === updatedCourse.code) setCourseState(updatedCourse);
+    return result;
   };
 
-  const deleteRegisteredCourse = (courseCode) => {
+  const archiveRegisteredCourse = async (courseCode) => {
+    const result = await archiveCourse(courseCode);
+    if (!result.ok) {
+      setToast("과정을 목록에서 숨기지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+      return result;
+    }
     const remaining = courses.filter((item) => item.code !== courseCode);
     setCourses(remaining);
-    if (course.code === courseCode) {
+    if (course?.code === courseCode) {
       if (remaining.length) selectCourse(remaining[0]);
       else {
-        setRole(null);
+        setCourseState(null);
         setProfessorStartTab("create");
         setCode("");
       }
     }
+    if (!remaining.length) setCourseLoadStatus("empty");
+    return result;
   };
 
-  const enterWithReentryOnly = () => {
+  const enterWithReentryOnly = async () => {
     if (!privacyAccepted) {
       setToast("정보 입력 주의사항을 확인해주세요.");
       return;
@@ -1114,7 +1154,8 @@ function App() {
     }
     const { courseItem, participant } = matches[0];
     const profile = { ...participant, lastAccessAt: now(), lastActiveAt: now() };
-    saveStudentToCourse(courseItem, profile, participant.classId ? { id: participant.classId, name: participant.className } : null);
+    const result = await saveStudentToCourse(courseItem, profile, participant.classId ? { id: participant.classId, name: participant.className } : null);
+    if (!result.ok) return;
     setCode(courseItem.code);
     setStudentName(participant.name || participant.studentName || "");
     setReentryCode("");
@@ -1135,57 +1176,70 @@ function App() {
       setToast("교육생 이름을 입력해주세요.");
       return;
     }
-    const matchedCourse = courses.find((item) => item.code === enteredCode);
-    if (!matchedCourse) {
-      setToast("해당 과정 코드를 찾을 수 없습니다. 발급받은 코드를 다시 확인해주세요.");
-      return;
+    setEntryPending(true);
+    try {
+      const matchedCourse = DATA_MODE === "local"
+        ? courses.find((item) => item.code === enteredCode) || await getCourse(enteredCode)
+        : await getCourse(enteredCode);
+      if (!matchedCourse) {
+        setToast("해당 과정 코드를 찾을 수 없습니다. 발급받은 코드를 다시 확인해주세요.");
+        return;
+      }
+      setCourses((items) => [...items.filter((item) => item.code !== matchedCourse.code), matchedCourse]);
+      setCourseLoadStatus("ready");
+      if (nextRole === "student") {
+        const availableClasses = matchedCourse.classes || createClasses(matchedCourse.classCount);
+        const phase = getCoursePhase(matchedCourse);
+        const cleanName = studentName.trim();
+        const sameNameParticipants = (matchedCourse.participants || []).filter((item) => (item.name || item.studentName) === cleanName);
+        const enteredReentry = reentryCode.trim();
+        const storedProfiles = await getCollection("studentProfiles");
+        const storedProfile = (Array.isArray(storedProfiles) ? storedProfiles : []).find((item) => item.courseCode === matchedCourse.code && (item.name || item.studentName) === cleanName);
+        const existingParticipant = enteredReentry
+          ? (matchedCourse.participants || []).find((item) => [item.participantCode, item.reentryToken].includes(enteredReentry))
+          : storedProfile
+            ? (matchedCourse.participants || []).find((item) => (item.participantId || item.id) === storedProfile.participantId)
+            : sameNameParticipants.length === 1
+              ? sameNameParticipants[0]
+              : null;
+        if (enteredReentry && !existingParticipant) {
+          setToast("재입장 코드가 맞지 않습니다. 코드를 다시 확인해주세요.");
+          return;
+        }
+        if (!enteredReentry && sameNameParticipants.length > 1 && !existingParticipant && !allowDuplicateCreate) {
+          setDuplicateCandidates(sameNameParticipants);
+          setToast("같은 이름의 교육생이 2명 이상 있습니다. 본인의 반 또는 재입장 코드를 확인해주세요.");
+          return;
+        }
+        const needsClass = phase !== "before";
+        const classInfo = !needsClass
+          ? null
+          : existingParticipant?.classId
+            ? availableClasses.find((item) => item.id === existingParticipant.classId)
+            : availableClasses.length === 1
+              ? availableClasses[0]
+              : availableClasses.find((item) => item.id === selectedClassId);
+        if (needsClass && !classInfo) {
+          setToast("반 배정이 완료되었습니다. 본인의 반을 선택해주세요.");
+          return;
+        }
+        const profile = buildStudentProfile(matchedCourse, classInfo, existingParticipant);
+        const result = await saveStudentToCourse(matchedCourse, profile, classInfo);
+        if (!result.ok) return;
+        setDuplicateCandidates([]);
+        setAllowDuplicateCreate(false);
+        setReentryCode("");
+      } else {
+        selectCourse(matchedCourse);
+      }
+      setProfessorStartTab("dashboard");
+      setRole(nextRole);
+    } catch (error) {
+      console.warn("과정 코드 조회에 실패했습니다.", error);
+      setToast("과정 조회에 실패했습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+    } finally {
+      setEntryPending(false);
     }
-    if (nextRole === "student") {
-      const availableClasses = matchedCourse.classes || createClasses(matchedCourse.classCount);
-      const phase = getCoursePhase(matchedCourse);
-      const cleanName = studentName.trim();
-      const sameNameParticipants = (matchedCourse.participants || []).filter((item) => (item.name || item.studentName) === cleanName);
-      const enteredReentry = reentryCode.trim();
-      const storedProfiles = await getCollection("studentProfiles");
-      const storedProfile = (Array.isArray(storedProfiles) ? storedProfiles : []).find((item) => item.courseCode === matchedCourse.code && (item.name || item.studentName) === cleanName);
-      const existingParticipant = enteredReentry
-        ? (matchedCourse.participants || []).find((item) => [item.participantCode, item.reentryToken].includes(enteredReentry))
-        : storedProfile
-          ? (matchedCourse.participants || []).find((item) => (item.participantId || item.id) === storedProfile.participantId)
-          : sameNameParticipants.length === 1
-            ? sameNameParticipants[0]
-            : null;
-      if (enteredReentry && !existingParticipant) {
-        setToast("재입장 코드가 맞지 않습니다. 코드를 다시 확인해주세요.");
-        return;
-      }
-      if (!enteredReentry && sameNameParticipants.length > 1 && !existingParticipant && !allowDuplicateCreate) {
-        setDuplicateCandidates(sameNameParticipants);
-        setToast("같은 이름의 교육생이 2명 이상 있습니다. 본인의 반 또는 재입장 코드를 확인해주세요.");
-        return;
-      }
-      const needsClass = phase !== "before";
-      const classInfo = !needsClass
-        ? null
-        : existingParticipant?.classId
-          ? availableClasses.find((item) => item.id === existingParticipant.classId)
-          : availableClasses.length === 1
-            ? availableClasses[0]
-            : availableClasses.find((item) => item.id === selectedClassId);
-      if (needsClass && !classInfo) {
-        setToast("반 배정이 완료되었습니다. 본인의 반을 선택해주세요.");
-        return;
-      }
-      const profile = buildStudentProfile(matchedCourse, classInfo, existingParticipant);
-      saveStudentToCourse(matchedCourse, profile, classInfo);
-      setDuplicateCandidates([]);
-      setAllowDuplicateCreate(false);
-      setReentryCode("");
-    } else {
-      selectCourse(matchedCourse);
-    }
-    setProfessorStartTab("dashboard");
-    setRole(nextRole);
   };
 
   const enterProfessorAdmin = () => {
@@ -1220,6 +1274,9 @@ function App() {
             <h1>교육의 순간을<br />현장의 변화로<br />연결합니다.</h1>
             <p>목표부터 수료 성찰, 2개월 후 현업 적용까지 하나의 데이터 흐름으로 확인하세요.</p>
           </div>
+          {courseLoadStatus === "loading" && <div className="course-lookup-status is-loading">등록된 과정을 확인하고 있습니다.</div>}
+          {courseLoadStatus === "empty" && <div className="course-lookup-status is-empty">등록된 과정이 없습니다. 교수요원은 관리자 인증 후 새 과정을 등록해 주세요.</div>}
+          {courseLoadStatus === "error" && <div className="course-lookup-status is-error">과정 조회에 실패했습니다. 연결과 환경 설정을 확인한 뒤 새로고침해 주세요.</div>}
           <label className="field">
             <span>과정 코드</span>
             <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="NH-2480" />
@@ -1238,12 +1295,18 @@ function App() {
             <div className="duplicate-entry-panel">
               <b>같은 이름의 교육생이 이 과정에 2명 이상 있습니다.</b>
               <p>본인의 반을 선택하거나, 안내받은 재입장 코드를 입력해 주세요.</p>
-              <div>{duplicateCandidates.map((item) => <button type="button" key={item.participantId || item.id} onClick={() => {
-                const profile = { ...item, lastAccessAt: now(), lastActiveAt: now() };
-                saveStudentToCourse(entryCourse, profile, item.classId ? { id: item.classId, name: item.className } : null);
-                setStudentName(item.name || item.studentName || "");
-                setDuplicateCandidates([]);
-                setRole("student");
+              <div>{duplicateCandidates.map((item) => <button type="button" disabled={entryPending} key={item.participantId || item.id} onClick={async () => {
+                setEntryPending(true);
+                try {
+                  const profile = { ...item, lastAccessAt: now(), lastActiveAt: now() };
+                  const result = await saveStudentToCourse(entryCourse, profile, item.classId ? { id: item.classId, name: item.className } : null);
+                  if (!result.ok) return;
+                  setStudentName(item.name || item.studentName || "");
+                  setDuplicateCandidates([]);
+                  setRole("student");
+                } finally {
+                  setEntryPending(false);
+                }
               }}>{item.name || item.studentName} / {item.className || "미배정"}</button>)}</div>
               <label className="field">
                 <span>재입장 코드 <small>동명이인 확인용</small></span>
@@ -1258,8 +1321,8 @@ function App() {
             <span><b>입력 전 확인</b><br />입장용 이름 외 고객정보, 계좌정보 및 회사기밀은 입력하지 않습니다.</span>
           </label>
           <div className="entry-actions">
-            <button className="primary" onClick={() => enter("student")}>교육생으로 입장</button>
-            <button className="secondary" onClick={() => enter("professor")}>교수요원으로 입장</button>
+            <button className="primary" disabled={entryPending || courseLoadStatus === "loading"} onClick={() => enter("student")}>{entryPending ? "과정 확인 중…" : "교육생으로 입장"}</button>
+            <button className="secondary" disabled={entryPending || courseLoadStatus === "loading"} onClick={() => enter("professor")}>{entryPending ? "과정 확인 중…" : "교수요원으로 입장"}</button>
           </div>
           <p className="demo-hint">과정 관리자는 코드를 비워둔 채 교수요원으로 입장할 수 있습니다.</p>
           {showProfessorLogin && (
@@ -1290,7 +1353,7 @@ function App() {
       <Header course={course} role={role} onHome={() => setRole(null)} onExit={() => setRole(null)} />
       {role === "student"
         ? <StudentApp course={course} setCourse={setCourse} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
-        : <ProfessorApp course={course} setCourse={setCourse} courses={courses} ideologyStamps={ideologyStamps} setIdeologyStamps={setIdeologyStamps} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onDeleteCourse={deleteRegisteredCourse} initialTab={professorStartTab} onExit={() => setRole(null)} notify={setToast} />}
+        : <ProfessorApp course={course || initialCourseRef.current} setCourse={setCourse} courses={courses} ideologyStamps={ideologyStamps} setIdeologyStamps={setIdeologyStamps} onCreateCourse={createRegisteredCourse} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onArchiveCourse={archiveRegisteredCourse} initialTab={course ? professorStartTab : "create"} onExit={() => setRole(null)} notify={setToast} />}
       {toast && <Toast>{toast}</Toast>}
     </div>
   );
@@ -1326,7 +1389,7 @@ function Header({ course, role, onHome, onExit }) {
       <Brand onClick={onHome} />
       <div className="topbar-meta">
         <span className={`role-badge ${role}`}>{role === "student" ? "교육생" : "교수요원"}</span>
-        <span className="course-code">{course.code}</span>
+        <span className="course-code">{course?.code || "과정 미선택"}</span>
         <button className="icon-button" onClick={onExit} aria-label="나가기">↗</button>
       </div>
     </header>
@@ -2286,7 +2349,7 @@ function PageBack({ onClick }) {
   return <button className="page-back" onClick={onClick} aria-label="이전 화면으로 돌아가기">← 바로 이전</button>;
 }
 
-function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyStamps, onSelectCourse, onUpdateCourse, onDeleteCourse, initialTab, onExit, notify }) {
+function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyStamps, onCreateCourse, onSelectCourse, onUpdateCourse, onArchiveCourse, initialTab, onExit, notify }) {
   const [tab, setTab] = useState(initialTab || "dashboard");
   const [selectedClassFilter, setSelectedClassFilter] = useState(course.classes?.[0]?.id || "class-1");
   const [analysis, setAnalysis] = useState(null);
@@ -2307,6 +2370,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
     endDate: todayInKorea(),
   });
   const [issuedCode, setIssuedCode] = useState("");
+  const [isCreatingCourse, setIsCreatingCourse] = useState(false);
   const pushTimer = useRef(null);
   const filteredCourse = filterCourseByClass(course, selectedClassFilter);
   const filteredParticipantCount = participantCountForClass(course, selectedClassFilter);
@@ -2467,7 +2531,8 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
     if (await sendFollowupDemoNotification()) notify("교육생 탭에 시연용 알림을 다시 보냈습니다.");
   };
 
-  const registerCourse = () => {
+  const registerCourse = async () => {
+    if (isCreatingCourse) return;
     if (!newCourse.name.trim()) return notify("연간 기수를 구분할 과정명을 입력해주세요.");
     if (!newCourse.startDate || !newCourse.endDate) return notify("교육 시작일과 종료일을 입력해주세요.");
     if (newCourse.endDate < newCourse.startDate) return notify("종료일은 시작일보다 빠를 수 없습니다.");
@@ -2507,10 +2572,16 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
       missions: [],
       olympicActivityOpen: false,
     };
-    setCourse(created);
-    setIssuedCode(code);
-    setNewCourse((current) => ({ ...current, name: "" }));
-    notify(`${code} 과정 코드가 발급되었습니다.`);
+    setIsCreatingCourse(true);
+    try {
+      const result = await onCreateCourse(created);
+      if (!result.ok) return;
+      setIssuedCode(code);
+      setNewCourse((current) => ({ ...current, name: "" }));
+      notify(`${code} 과정 코드가 발급되었습니다.`);
+    } finally {
+      setIsCreatingCourse(false);
+    }
   };
 
   const professorTabs = [
@@ -2540,7 +2611,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
           <div className="course-head-actions"><span className={`phase-badge ${phase}`}>{({ before: "입교 전", active: "교육 중", completion: "수료일", followupWait: "현업 적용 대기", transfer: "교육 후" })[phase]}</span></div>
         </section>}
         {tab !== "create" && (course.classCount || 1) > 1 && <ClassFilterTabs classes={course.classes} value={selectedClassFilter} onChange={(value) => { setSelectedClassFilter(value); setAnalysis(null); }} />}
-        {tab === "create" && <CourseRegistrationForm value={newCourse} onChange={setNewCourse} onSubmit={registerCourse} issuedCode={issuedCode} course={course} courses={courses} onSelectCourse={(selected) => { onSelectCourse(selected); setTab("dashboard"); }} onUpdateCourse={onUpdateCourse} onDeleteCourse={onDeleteCourse} notify={notify} />}
+        {tab === "create" && <CourseRegistrationForm value={newCourse} onChange={setNewCourse} onSubmit={registerCourse} isCreating={isCreatingCourse} issuedCode={issuedCode} course={course} courses={courses} onSelectCourse={(selected) => { onSelectCourse(selected); setTab("dashboard"); }} onUpdateCourse={onUpdateCourse} onArchiveCourse={onArchiveCourse} notify={notify} />}
         {tab === "dashboard" && <>
           {course.type === "ideology" && phase === "active" && <OlympicActivityControl course={course} setCourse={setCourse} />}
           <OverallCourseSummary course={course} />
@@ -2816,7 +2887,7 @@ function OlympicActivityControl({ course, setCourse }) {
   );
 }
 
-function CourseRegistrationForm({ value, onChange, onSubmit, issuedCode, course, courses, onSelectCourse, onUpdateCourse, onDeleteCourse, notify }) {
+function CourseRegistrationForm({ value, onChange, onSubmit, isCreating, issuedCode, course, courses, onSelectCourse, onUpdateCourse, onArchiveCourse, notify }) {
   const [listTab, setListTab] = useState("active");
   const [search, setSearch] = useState("");
   const [yearFilter, setYearFilter] = useState("all");
@@ -2824,8 +2895,10 @@ function CourseRegistrationForm({ value, onChange, onSubmit, issuedCode, course,
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [editingCourse, setEditingCourse] = useState(null);
-  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [archiveTarget, setArchiveTarget] = useState(null);
+  const [pendingAction, setPendingAction] = useState(null);
   const pageSize = 10;
+  const issuedCourse = courses.find((item) => item.code === issuedCode) || null;
   const years = useMemo(() => [...new Set(courses.map((item) => item.startDate?.slice(0, 4)).filter(Boolean))].sort((a, b) => b.localeCompare(a)), [courses]);
   const filteredCourses = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -2854,19 +2927,21 @@ function CourseRegistrationForm({ value, onChange, onSubmit, issuedCode, course,
   }, [page, totalPages]);
 
   const copyCode = async () => {
+    if (!issuedCourse?.code) return;
     try {
-      await navigator.clipboard.writeText(course.code);
+      await navigator.clipboard.writeText(issuedCourse.code);
       notify("발급된 과정 코드를 복사했습니다.");
     } catch {
-      notify(`발급 코드: ${course.code}`);
+      notify(`발급 코드: ${issuedCourse.code}`);
     }
   };
 
-  const saveEditedCourse = () => {
+  const saveEditedCourse = async () => {
+    if (pendingAction) return;
     if (!editingCourse.name.trim()) return notify("과정명을 입력해주세요.");
     if (!editingCourse.startDate || !editingCourse.endDate) return notify("교육기간을 입력해주세요.");
     if (editingCourse.endDate < editingCourse.startDate) return notify("종료일은 시작일보다 빠를 수 없습니다.");
-    onUpdateCourse({
+    const updatedCourse = {
       ...editingCourse,
       name: editingCourse.name.trim(),
       leadershipGrade: editingCourse.type === "leader" ? editingCourse.leadershipGrade : undefined,
@@ -2874,19 +2949,29 @@ function CourseRegistrationForm({ value, onChange, onSubmit, issuedCode, course,
       classCount: Number(editingCourse.classCount) || 1,
       classes: createClasses(editingCourse.classCount),
       updatedAt: now(),
-    });
-    setEditingCourse(null);
-    notify(`${editingCourse.code} 과정 정보를 수정했습니다.`);
+    };
+    setPendingAction("edit");
+    try {
+      const result = await onUpdateCourse(updatedCourse);
+      if (!result.ok) return;
+      setEditingCourse(null);
+      notify(`${updatedCourse.code} 과정 정보를 수정했습니다.`);
+    } finally {
+      setPendingAction(null);
+    }
   };
 
-  const confirmDelete = () => {
-    if (courses.length === 1) {
-      setDeleteTarget(null);
-      return notify("마지막 남은 과정은 삭제할 수 없습니다. 새 과정을 등록한 뒤 삭제해주세요.");
+  const confirmArchive = async () => {
+    if (pendingAction || !archiveTarget) return;
+    setPendingAction("archive");
+    try {
+      const result = await onArchiveCourse(archiveTarget.code);
+      if (!result.ok) return;
+      notify(`${archiveTarget.code} 과정을 목록에서 숨겼습니다.`);
+      setArchiveTarget(null);
+    } finally {
+      setPendingAction(null);
     }
-    onDeleteCourse(deleteTarget.code);
-    notify(`${deleteTarget.code} 과정을 삭제했습니다.`);
-    setDeleteTarget(null);
   };
   return (
     <section className="content-card course-create-card">
@@ -2931,10 +3016,10 @@ function CourseRegistrationForm({ value, onChange, onSubmit, issuedCode, course,
         <small>과정은 하나로 유지되고 교육생 데이터만 반별로 구분됩니다.</small>
       </div>
       <div className="transfer-date-preview">→ 현업활용도 발송: <b>{addMonthsToDate(value.endDate, 2)}</b></div>
-      <button className="primary create-course-button" onClick={onSubmit}>과정 등록 및 코드 발급</button>
-      {issuedCode && (
+      <button className="primary create-course-button" disabled={isCreating} onClick={onSubmit}>{isCreating ? "과정 등록 중…" : "과정 등록 및 코드 발급"}</button>
+      {issuedCourse && (
         <div className="issued-code-card">
-          <div><span>발급 완료</span><h3>{course.code}</h3><p>{courseTypes[course.type]} · {course.startDate} ~ {course.endDate}</p></div>
+          <div><span>발급 완료</span><h3>{issuedCourse.code}</h3><p>{courseTypes[issuedCourse.type]} · {issuedCourse.startDate} ~ {issuedCourse.endDate}</p></div>
           <div>
             <button className="secondary" onClick={copyCode}>코드 복사</button>
           </div>
@@ -2972,18 +3057,18 @@ function CourseRegistrationForm({ value, onChange, onSubmit, issuedCode, course,
         </div>
         <div className="course-list-items">
           {pagedCourses.map((item) => (
-            <article key={item.code} className={item.code === course.code ? "active" : ""}>
+            <article key={item.code} className={item.code === course?.code ? "active" : ""}>
               <button className="course-list-main" onClick={() => onSelectCourse(item)}>
                 <span><b>{item.name}</b><small>{courseTypes[item.type]}{item.leadershipGrade ? ` · ${item.leadershipGrade}` : ""} · {item.classCount || 1}개 반 · {item.startDate} ~ {item.endDate}</small></span>
                 <div><em className={`course-status ${getCoursePhase(item)}`}>{({ before: "예정", active: "운영 중", completion: "수료일", followupWait: "2개월 후 조사 대기", transfer: "현업활용도 조사" })[getCoursePhase(item)]}</em><strong>{item.code}</strong></div>
               </button>
               <div className="course-row-actions">
-                <button onClick={() => setEditingCourse({ ...item })}>수정</button>
-                <button className="delete" onClick={() => setDeleteTarget(item)}>삭제</button>
+                <button disabled={Boolean(pendingAction)} onClick={() => setEditingCourse({ ...item })}>수정</button>
+                <button className="delete" disabled={Boolean(pendingAction)} onClick={() => setArchiveTarget(item)}>목록에서 숨김</button>
               </div>
             </article>
           ))}
-          {!pagedCourses.length && <div className="course-list-empty">조건에 맞는 과정이 없습니다.</div>}
+          {!pagedCourses.length && <div className="course-list-empty">{courses.length ? "조건에 맞는 과정이 없습니다." : "등록된 과정이 없습니다."}</div>}
         </div>
         {totalPages > 1 && (
           <div className="course-pagination">
@@ -2996,7 +3081,7 @@ function CourseRegistrationForm({ value, onChange, onSubmit, issuedCode, course,
       {editingCourse && (
         <div className="course-modal" role="dialog" aria-modal="true">
           <div className="course-modal-card">
-            <div className="modal-head"><div><span className="eyebrow">과정 정보 수정</span><h3>{editingCourse.code}</h3></div><button onClick={() => setEditingCourse(null)} aria-label="과정 정보 수정 닫기">×</button></div>
+            <div className="modal-head"><div><span className="eyebrow">과정 정보 수정</span><h3>{editingCourse.code}</h3></div><button disabled={pendingAction === "edit"} onClick={() => setEditingCourse(null)} aria-label="과정 정보 수정 닫기">×</button></div>
             <label className="field"><span>과정명</span><input value={editingCourse.name} onChange={(e) => setEditingCourse({ ...editingCourse, name: e.target.value })} /></label>
             <div className="readonly-course-type"><span>과정 유형</span><b>{courseTypes[editingCourse.type]}</b><small>코드 체계 유지를 위해 과정 유형은 변경할 수 없습니다.</small></div>
             {editingCourse.type === "leader" && <div className="leadership-grade-field"><span>대상 직급</span><div>{["M급", "3급", "4급", "5급"].map((grade) => <button key={grade} className={editingCourse.leadershipGrade === grade ? "selected" : ""} onClick={() => setEditingCourse({ ...editingCourse, leadershipGrade: grade })}>{grade}</button>)}</div></div>}
@@ -3007,18 +3092,18 @@ function CourseRegistrationForm({ value, onChange, onSubmit, issuedCode, course,
               <label className="field"><span>교육 종료일</span><input type="date" min={editingCourse.startDate} value={editingCourse.endDate} onChange={(e) => setEditingCourse({ ...editingCourse, endDate: e.target.value })} /></label>
             </div>
             <div className="transfer-date-preview">→ 현업활용도 발송: <b>{addMonthsToDate(editingCourse.endDate, 2)}</b></div>
-            <div className="modal-actions"><button className="secondary" onClick={() => setEditingCourse(null)}>취소</button><button className="primary" onClick={saveEditedCourse}>수정사항 저장</button></div>
+            <div className="modal-actions"><button className="secondary" disabled={pendingAction === "edit"} onClick={() => setEditingCourse(null)}>취소</button><button className="primary" disabled={pendingAction === "edit"} onClick={saveEditedCourse}>{pendingAction === "edit" ? "저장 중…" : "수정사항 저장"}</button></div>
           </div>
         </div>
       )}
-      {deleteTarget && (
+      {archiveTarget && (
         <div className="course-modal" role="alertdialog" aria-modal="true">
           <div className="course-modal-card delete-confirm">
             <div className="delete-symbol">!</div>
-            <h3>이 과정을 삭제할까요?</h3>
-            <p>삭제된 과정과 교육생 응답은 복구할 수 없습니다.</p>
-            <div><b>{deleteTarget.name}</b><span>{deleteTarget.code} · {deleteTarget.startDate} ~ {deleteTarget.endDate}</span></div>
-            <div className="modal-actions"><button className="secondary" onClick={() => setDeleteTarget(null)}>취소</button><button className="danger-button" onClick={confirmDelete}>확인하고 삭제</button></div>
+            <h3>이 과정을 목록에서 숨길까요?</h3>
+            <p>과정과 기존 교육생 응답은 DB에 유지되며, 목록·검색·통계와 과정 코드 입장에서 제외됩니다.</p>
+            <div><b>{archiveTarget.name}</b><span>{archiveTarget.code} · {archiveTarget.startDate} ~ {archiveTarget.endDate}</span></div>
+            <div className="modal-actions"><button className="secondary" disabled={pendingAction === "archive"} onClick={() => setArchiveTarget(null)}>취소</button><button className="danger-button" disabled={pendingAction === "archive"} onClick={confirmArchive}>{pendingAction === "archive" ? "숨기는 중…" : "확인하고 숨기기"}</button></div>
           </div>
         </div>
       )}

@@ -189,6 +189,19 @@ summary:focus-visible {
 .brand b { font-size: 18px; letter-spacing: -.5px; }
 .brand span { color: var(--muted); font-size: 11px; margin-top: 2px; }
 .entry-copy { margin: 44px 0 28px; }
+.course-lookup-status {
+  margin: -12px 0 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  background: #f5f7f5;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.course-lookup-status.is-loading { color: var(--deep); background: var(--mint); }
+.course-lookup-status.is-empty { color: #66501f; border-color: #e7d7aa; background: #fff9e8; }
+.course-lookup-status.is-error { color: #963e39; border-color: #efc7c3; background: #fff0ee; }
 .eyebrow { display: block; color: var(--green); font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .entry-copy h1 { margin: 10px 0 14px; font-size: clamp(32px, 7vw, 46px); line-height: 1.14; letter-spacing: -1px; color: var(--deep); }
 .entry-copy p, .helper { color: var(--muted); line-height: 1.65; }

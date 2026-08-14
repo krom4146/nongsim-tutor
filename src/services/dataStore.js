@@ -133,11 +133,17 @@ function readJson(key, fallback = null) {
   }
 }
 
-async function getLocalCourses() {
+function getStoredLocalCourses() {
   const saved = readJson(COURSES_KEY, []);
-  if (Array.isArray(saved) && saved.length) return saved.map(migrate).filter(Boolean).map(normalizeCourse);
+  if (Array.isArray(saved) && saved.length) {
+    return saved.map(migrate).filter(Boolean).map(normalizeCourse);
+  }
   const activeCourse = migrate(readJson(ACTIVE_COURSE_KEY));
   return activeCourse ? [normalizeCourse(activeCourse)] : [];
+}
+
+async function getLocalCourses() {
+  return getStoredLocalCourses().filter((course) => !course.archivedAt);
 }
 
 export async function getCourse(code) {
@@ -173,7 +179,7 @@ export async function getCourses() {
 }
 
 async function saveLocalCourse(course) {
-  const courses = await getLocalCourses();
+  const courses = getStoredLocalCourses();
   const normalized = normalizeCourse({ ...course, schemaVersion: CURRENT_SCHEMA_VERSION });
   const index = courses.findIndex((item) => item.code === normalized.code);
   const nextCourses = index >= 0
@@ -218,6 +224,37 @@ export async function saveCourses(courses) {
       .from("courses")
       .upsert(rows, { onConflict: "code" });
     return error ? { ok: false, error: errorMessage(error) } : { ok: true };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function archiveCourse(code) {
+  if (DATA_MODE === "local") {
+    const courses = getStoredLocalCourses();
+    const index = courses.findIndex((course) => course.code === code && !course.archivedAt);
+    if (index < 0) return { ok: false, error: "Course not found." };
+    const archivedAt = new Date().toISOString();
+    const result = safeWrite(COURSES_KEY, courses.map((course, itemIndex) => (
+      itemIndex === index ? { ...course, archivedAt } : course
+    )));
+    if (result.ok) notifyCourseChanged(code);
+    return result;
+  }
+
+  const clientResult = getSupabaseClient();
+  if (!clientResult.ok) return clientResult;
+  try {
+    const { data, error } = await clientResult.client
+      .from("courses")
+      .update({ archived_at: new Date().toISOString() })
+      .eq("code", code)
+      .is("archived_at", null)
+      .select("code")
+      .maybeSingle();
+    if (error) return { ok: false, error: errorMessage(error) };
+    if (!data) return { ok: false, error: "Course not found or already archived." };
+    return { ok: true };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
   }
