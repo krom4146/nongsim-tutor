@@ -138,3 +138,106 @@ create policy "demo_update_missions" on missions for update using (true) with ch
 alter publication supabase_realtime add table courses;
 alter publication supabase_realtime add table rounds;
 alter publication supabase_realtime add table round_items;
+
+
+-- 1) 과정 숨김 처리
+alter table public.courses
+  add column if not exists archived_at timestamptz;
+
+-- 2) 공개 클라이언트 권한 회수 후 필요한 것만 재부여
+revoke all privileges on all tables in schema public
+from anon, authenticated;
+
+grant select, insert, update
+on table
+  public.courses,
+  public.rounds,
+  public.round_items,
+  public.goals,
+  public.missions
+to anon, authenticated;
+
+grant select, insert
+on table public.surveys
+to anon, authenticated;
+
+drop policy if exists "demo_update_goals" on public.goals;
+create policy "demo_update_goals"
+on public.goals
+for update
+to anon, authenticated
+using (true)
+with check (true);
+
+-- 3) 동시 반응 덮어쓰기를 막는 원자적 증감 함수 (반응 키: agree)
+create or replace function public.bump_reaction(
+  p_item_id text,
+  p_kind text,
+  p_delta integer default 1
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = pg_catalog, public
+as $$
+declare
+  v_reactions jsonb;
+begin
+  if p_kind not in ('agree') then
+    raise exception using
+      errcode = '22023',
+      message = 'invalid reaction kind';
+  end if;
+
+  if p_delta not in (-1, 1) then
+    raise exception using
+      errcode = '22023',
+      message = 'reaction delta must be -1 or 1';
+  end if;
+
+  update public.round_items
+  set reactions = jsonb_set(
+    coalesce(reactions, '{}'::jsonb),
+    array[p_kind],
+    to_jsonb(
+      greatest(
+        coalesce((reactions ->> p_kind)::integer, 0) + p_delta,
+        0
+      )
+    ),
+    true
+  )
+  where id = p_item_id
+  returning reactions into v_reactions;
+
+  if not found then
+    raise exception using
+      errcode = 'P0002',
+      message = 'round item not found';
+  end if;
+
+  return v_reactions;
+end;
+$$;
+
+revoke all on function public.bump_reaction(text, text, integer) from public;
+grant execute on function public.bump_reaction(text, text, integer)
+to anon, authenticated;
+
+-- 4) courses.updated_at 자동 갱신
+create or replace function public.touch_updated_at()
+returns trigger
+language plpgsql
+security invoker
+set search_path = pg_catalog, public
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_courses_touch on public.courses;
+create trigger trg_courses_touch
+before update on public.courses
+for each row execute function public.touch_updated_at();
