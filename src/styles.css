@@ -1848,6 +1848,27 @@ select:focus {
   }
 }
 
+.realtime-status {
+  position: sticky;
+  top: 72px;
+  z-index: 19;
+  padding: 7px var(--page-gutter);
+  border-bottom: 1px solid rgba(167,187,160,.2);
+  text-align: center;
+  color: #425647;
+  background: #edf4ee;
+  font-size: 12px;
+  font-weight: 800;
+}
+.realtime-status.connecting, .realtime-status.idle { color: #66501f; background: #fff9e8; }
+.realtime-status.error { color: #963e39; background: #fff0ee; }
+.like-button.active { color: white; border-color: var(--green); background: var(--green); }
+.like-button:disabled, .board-file-button.is-disabled { cursor: wait; opacity: .62; }
+
+@media (max-width: 640px) {
+  .realtime-status { top: 66px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;

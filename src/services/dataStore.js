@@ -42,6 +42,28 @@ const COURSE_COLUMNS = [
   "created_at",
   "updated_at",
 ].join(",");
+const ROUND_COLUMNS = [
+  "id",
+  "course_code",
+  "kind",
+  "prompt",
+  "anonymous",
+  "question_intent",
+  "created_at",
+].join(",");
+const ROUND_ITEM_COLUMNS = [
+  "id",
+  "round_id",
+  "course_code",
+  "by_name",
+  "text",
+  "url",
+  "reactions",
+  "created_at",
+].join(",");
+const ACTIVITY_PAYLOAD_PREFIX = "nongsim:v1:";
+const DEFAULT_CLASS_ID = "class-1";
+const DEFAULT_CLASS_NAME = "1반";
 const COURSE_DATA_FIELDS = [
   "templateId",
   "privacyNoticeAccepted",
@@ -58,6 +80,140 @@ const COURSE_DATA_FIELDS = [
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : error?.message || String(error);
+}
+
+function encodeActivityPayload(value) {
+  return `${ACTIVITY_PAYLOAD_PREFIX}${JSON.stringify(value)}`;
+}
+
+function decodeActivityPayload(value) {
+  if (typeof value !== "string" || !value.startsWith(ACTIVITY_PAYLOAD_PREFIX)) return null;
+  try {
+    return JSON.parse(value.slice(ACTIVITY_PAYLOAD_PREFIX.length));
+  } catch (error) {
+    console.warn("활동 메타데이터를 복원하지 못했습니다.", error);
+    return null;
+  }
+}
+
+function mergeById(items, incoming) {
+  const merged = new Map((items || []).filter((item) => item?.id).map((item) => [item.id, item]));
+  if (incoming?.id) merged.set(incoming.id, incoming);
+  return [...merged.values()];
+}
+
+export function roundToRow(courseCode, round) {
+  const metadata = {
+    questionIntent: round.questionIntent ?? null,
+    questionType: round.questionType ?? "subjective",
+    options: Array.isArray(round.options) ? round.options : [],
+    scope: round.scope ?? "class",
+    classId: round.classId ?? DEFAULT_CLASS_ID,
+    className: round.className ?? DEFAULT_CLASS_NAME,
+    description: round.description ?? null,
+  };
+  return {
+    id: round.id,
+    course_code: courseCode,
+    kind: round.kind,
+    prompt: round.prompt ?? "",
+    anonymous: round.anonymous === true,
+    question_intent: encodeActivityPayload(metadata),
+    created_at: round.createdAt || new Date().toISOString(),
+  };
+}
+
+export function roundFromRow(row) {
+  if (!row) return null;
+  const metadata = decodeActivityPayload(row.question_intent);
+  return {
+    id: row.id,
+    courseId: row.course_code,
+    kind: row.kind,
+    prompt: row.prompt || "",
+    anonymous: row.anonymous === true,
+    questionIntent: metadata?.questionIntent ?? (metadata ? null : row.question_intent),
+    questionType: metadata?.questionType || "subjective",
+    options: Array.isArray(metadata?.options) ? metadata.options : [],
+    scope: metadata?.scope || "class",
+    classId: metadata?.classId || DEFAULT_CLASS_ID,
+    className: metadata?.className || DEFAULT_CLASS_NAME,
+    description: metadata?.description || undefined,
+    items: [],
+    createdAt: row.created_at,
+  };
+}
+
+export function roundItemToRow(courseCode, round, item) {
+  const content = {
+    text: item.text ?? "",
+    participantId: item.participantId ?? null,
+    choice: item.choice ?? null,
+  };
+  return {
+    id: item.id,
+    round_id: round.id,
+    course_code: courseCode,
+    by_name: round.anonymous === true ? "익명" : String(item.by || "").trim(),
+    text: encodeActivityPayload(content),
+    url: item.url || item.imageUrl || null,
+    reactions: item.reactions && typeof item.reactions === "object" ? item.reactions : {},
+    created_at: item.createdAt || new Date().toISOString(),
+  };
+}
+
+export function roundItemFromRow(row, round = null) {
+  if (!row) return null;
+  const content = decodeActivityPayload(row.text);
+  return {
+    id: row.id,
+    roundId: row.round_id,
+    courseId: row.course_code,
+    participantId: content?.participantId || null,
+    by: row.by_name || (round?.anonymous ? "익명" : ""),
+    classId: round?.classId || DEFAULT_CLASS_ID,
+    className: round?.className || DEFAULT_CLASS_NAME,
+    text: content?.text ?? row.text ?? "",
+    choice: content?.choice || undefined,
+    url: row.url || undefined,
+    reactions: row.reactions && typeof row.reactions === "object" ? row.reactions : {},
+    createdAt: row.created_at,
+  };
+}
+
+async function getSupabaseActivities(client, courseCodes) {
+  const codes = [...new Set((courseCodes || []).filter(Boolean))];
+  if (!codes.length) return new Map();
+  const [roundResult, itemResult] = await Promise.all([
+    client
+      .from("rounds")
+      .select(ROUND_COLUMNS)
+      .in("course_code", codes)
+      .order("created_at", { ascending: true }),
+    client
+      .from("round_items")
+      .select(ROUND_ITEM_COLUMNS)
+      .in("course_code", codes)
+      .order("created_at", { ascending: true }),
+  ]);
+  if (roundResult.error) throw new Error(errorMessage(roundResult.error));
+  if (itemResult.error) throw new Error(errorMessage(itemResult.error));
+
+  const rounds = (roundResult.data || []).map(roundFromRow).filter(Boolean);
+  const roundById = new Map(rounds.map((round) => [round.id, round]));
+  (itemResult.data || []).forEach((row) => {
+    const round = roundById.get(row.round_id);
+    if (!round || round.courseId !== row.course_code) return;
+    const item = roundItemFromRow(row, round);
+    round.items = mergeById(round.items, item);
+  });
+
+  const activitiesByCourse = new Map(codes.map((code) => [code, []]));
+  rounds.forEach((round) => {
+    const courseRounds = activitiesByCourse.get(round.courseId) || [];
+    activitiesByCourse.set(round.courseId, mergeById(courseRounds, round));
+  });
+  return activitiesByCourse;
 }
 
 function courseData(course = {}) {
@@ -161,7 +317,9 @@ export async function getCourse(code) {
     .is("archived_at", null)
     .maybeSingle();
   if (error) throw new Error(errorMessage(error));
-  return courseFromRow(data);
+  if (!data) return null;
+  const activities = await getSupabaseActivities(clientResult.client, [code]);
+  return { ...courseFromRow(data), rounds: activities.get(code) || [] };
 }
 
 export async function getCourses() {
@@ -175,7 +333,9 @@ export async function getCourses() {
     .is("archived_at", null)
     .order("created_at", { ascending: true });
   if (error) throw new Error(errorMessage(error));
-  return (data || []).map(courseFromRow).filter(Boolean);
+  const courses = (data || []).map(courseFromRow).filter(Boolean);
+  const activities = await getSupabaseActivities(clientResult.client, courses.map((course) => course.code));
+  return courses.map((course) => ({ ...course, rounds: activities.get(course.code) || [] }));
 }
 
 async function saveLocalCourse(course) {
@@ -200,6 +360,110 @@ export async function saveCourse(course) {
       .from("courses")
       .upsert(courseToRow(course), { onConflict: "code" });
     return error ? { ok: false, error: errorMessage(error) } : { ok: true };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function saveRound(course, round) {
+  if (DATA_MODE === "local") {
+    const savedRound = { ...round, courseId: course.code, items: round.items || [] };
+    const nextCourse = { ...course, rounds: mergeById(course.rounds, savedRound) };
+    const result = await saveLocalCourse(nextCourse);
+    return result.ok ? { ...result, round: savedRound } : result;
+  }
+
+  const clientResult = getSupabaseClient();
+  if (!clientResult.ok) return clientResult;
+  try {
+    const { data, error } = await clientResult.client
+      .from("rounds")
+      .upsert(roundToRow(course.code, round), { onConflict: "id" })
+      .select(ROUND_COLUMNS)
+      .single();
+    if (error) return { ok: false, error: errorMessage(error) };
+    return { ok: true, round: roundFromRow(data) };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function saveRoundItem(course, round, item) {
+  if (DATA_MODE === "local") {
+    const savedItem = {
+      ...item,
+      by: round.anonymous === true ? "익명" : item.by,
+      classId: round.classId || item.classId || DEFAULT_CLASS_ID,
+      className: round.className || item.className || DEFAULT_CLASS_NAME,
+    };
+    const nextCourse = {
+      ...course,
+      rounds: (course.rounds || []).map((currentRound) => currentRound.id === round.id
+        ? { ...currentRound, items: mergeById(currentRound.items, savedItem) }
+        : currentRound),
+    };
+    if (!nextCourse.rounds.some((currentRound) => currentRound.id === round.id)) {
+      return { ok: false, error: "Round not found." };
+    }
+    const result = await saveLocalCourse(nextCourse);
+    return result.ok ? { ...result, item: savedItem } : result;
+  }
+
+  const clientResult = getSupabaseClient();
+  if (!clientResult.ok) return clientResult;
+  try {
+    const { data, error } = await clientResult.client
+      .from("round_items")
+      .upsert(roundItemToRow(course.code, round, item), { onConflict: "id" })
+      .select(ROUND_ITEM_COLUMNS)
+      .single();
+    if (error) return { ok: false, error: errorMessage(error) };
+    return { ok: true, item: roundItemFromRow(data, round) };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function bumpReaction(course, roundId, itemId, reactionKey, delta) {
+  if (reactionKey !== "agree") return { ok: false, error: "Unsupported reaction key." };
+  if (![-1, 1].includes(delta)) return { ok: false, error: "Reaction delta must be -1 or 1." };
+
+  if (DATA_MODE === "local") {
+    const round = (course.rounds || []).find((currentRound) => currentRound.id === roundId);
+    const item = round?.items?.find((currentItem) => currentItem.id === itemId);
+    if (!item) return { ok: false, error: "Round item not found." };
+    const reactions = {
+      ...(item.reactions || {}),
+      agree: Math.max(0, Number(item.reactions?.agree || 0) + delta),
+    };
+    const nextCourse = {
+      ...course,
+      rounds: course.rounds.map((currentRound) => currentRound.id === roundId
+        ? {
+          ...currentRound,
+          items: currentRound.items.map((currentItem) => currentItem.id === itemId
+            ? { ...currentItem, reactions }
+            : currentItem),
+        }
+        : currentRound),
+    };
+    const result = await saveLocalCourse(nextCourse);
+    return result.ok ? { ...result, reactions } : result;
+  }
+
+  const clientResult = getSupabaseClient();
+  if (!clientResult.ok) return clientResult;
+  try {
+    const { data, error } = await clientResult.client.rpc("bump_reaction", {
+      p_item_id: itemId,
+      p_kind: reactionKey,
+      p_delta: delta,
+    });
+    if (error) return { ok: false, error: errorMessage(error) };
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return { ok: false, error: "Invalid reaction response." };
+    }
+    return { ok: true, reactions: data };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
   }

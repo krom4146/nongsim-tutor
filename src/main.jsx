@@ -1,7 +1,18 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { archiveCourse, getCollection, getCourse, getCourses, saveCourse, setActiveCourseCode, setCollection } from "./services/dataStore";
+import {
+  archiveCourse,
+  bumpReaction as bumpStoredReaction,
+  getCollection,
+  getCourse,
+  getCourses,
+  saveCourse,
+  saveRound,
+  saveRoundItem,
+  setActiveCourseCode,
+  setCollection,
+} from "./services/dataStore";
 import { seedDemoCourse } from "./services/demoCourseSeed";
 import { DATA_MODE } from "./services/supabaseClient";
 import { subscribeCourse } from "./services/realtimeBridge";
@@ -199,6 +210,12 @@ function personalFollowupLink(token) {
 
 function reactionScore(item) {
   return Object.values(item.reactions || {}).reduce((a, b) => a + b, 0);
+}
+
+function mergeEntityById(items, incoming) {
+  const merged = new Map((items || []).filter((item) => item?.id).map((item) => [item.id, item]));
+  if (incoming?.id) merged.set(incoming.id, incoming);
+  return [...merged.values()];
 }
 
 function sourceLabel(source) {
@@ -915,7 +932,60 @@ function App() {
   const [professorStartTab, setProfessorStartTab] = useState("dashboard");
   const [ideologyStamps, setIdeologyStamps] = useState([]);
   const [entryPending, setEntryPending] = useState(false);
+  const [realtimeStatus, setRealtimeStatus] = useState(DATA_MODE === "local" ? "LOCAL" : "IDLE");
   const entryCourse = courses.find((item) => item.code === code.trim().toUpperCase());
+
+  const applyActivityUpdate = (courseCode, update) => {
+    setCourseState((current) => current?.code === courseCode ? update(current) : current);
+    setCourses((items) => items.map((item) => item.code === courseCode ? update(item) : item));
+  };
+
+  const saveActivityRound = async (courseSnapshot, round) => {
+    const result = await saveRound(courseSnapshot, round);
+    if (!result.ok) return result;
+    const savedRound = {
+      ...round,
+      ...result.round,
+      items: round.items || result.round?.items || [],
+    };
+    applyActivityUpdate(courseSnapshot.code, (current) => ({
+      ...current,
+      rounds: mergeEntityById(current.rounds, savedRound),
+    }));
+    return { ...result, round: savedRound };
+  };
+
+  const saveActivityItem = async (courseSnapshot, round, item) => {
+    const result = await saveRoundItem(courseSnapshot, round, item);
+    if (!result.ok) return result;
+    const savedItem = { ...item, ...result.item };
+    applyActivityUpdate(courseSnapshot.code, (current) => ({
+      ...current,
+      rounds: current.rounds.map((currentRound) => currentRound.id === round.id
+        ? { ...currentRound, items: mergeEntityById(currentRound.items, savedItem) }
+        : currentRound),
+    }));
+    return { ...result, item: savedItem };
+  };
+
+  const changeActivityReaction = async (courseSnapshot, roundId, itemId, reactionKey, delta, previousReactions) => {
+    const optimisticReactions = {
+      ...(previousReactions || {}),
+      [reactionKey]: Math.max(0, Number(previousReactions?.[reactionKey] || 0) + delta),
+    };
+    const applyReactions = (reactions) => applyActivityUpdate(courseSnapshot.code, (current) => ({
+      ...current,
+      rounds: current.rounds.map((round) => round.id === roundId ? {
+        ...round,
+        items: round.items.map((item) => item.id === itemId ? { ...item, reactions } : item),
+      } : round),
+    }));
+
+    applyReactions(optimisticReactions);
+    const result = await bumpStoredReaction(courseSnapshot, roundId, itemId, reactionKey, delta);
+    applyReactions(result.ok ? result.reactions : previousReactions || {});
+    return result;
+  };
 
   const persistCourse = async (nextCourse) => {
     const result = await saveCourse(nextCourse);
@@ -982,17 +1052,38 @@ function App() {
   }, [ideologyStamps, storageReady]);
 
   useEffect(() => {
-    if (!course?.code || !storageReady) return undefined;
-    return subscribeCourse(course.code, async () => {
-      const nextCourses = await getCourses();
-      if (!nextCourses.length) return;
-      setCourses((current) => JSON.stringify(current) === JSON.stringify(nextCourses) ? current : nextCourses);
-      setCourseState((current) => {
-        const nextCourse = nextCourses.find((item) => item.code === current.code);
-        return nextCourse && JSON.stringify(nextCourse) !== JSON.stringify(current) ? nextCourse : current;
-      });
+    if (!course?.code || !storageReady || !role) {
+      setRealtimeStatus(DATA_MODE === "local" ? "LOCAL" : "IDLE");
+      return undefined;
+    }
+    let active = true;
+    if (DATA_MODE === "supabase") setRealtimeStatus("CONNECTING");
+    const unsubscribe = subscribeCourse(course.code, async (_, detail = {}) => {
+      if (!active) return;
+      if (detail.type === "status") {
+        setRealtimeStatus(detail.status || "CHANNEL_ERROR");
+        if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(detail.status)) {
+          setToast("실시간 연결이 원활하지 않습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.");
+        }
+        return;
+      }
+      try {
+        const nextCourse = await getCourse(course.code);
+        if (!active || !nextCourse) return;
+        setCourses((items) => items.map((item) => item.code === nextCourse.code ? nextCourse : item));
+        setCourseState((current) => current?.code === nextCourse.code ? nextCourse : current);
+      } catch (error) {
+        console.error("실시간 활동 데이터를 다시 불러오지 못했습니다.", error);
+        if (!active) return;
+        setRealtimeStatus("CHANNEL_ERROR");
+        setToast("새 활동을 불러오지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+      }
     });
-  }, [course?.code, storageReady]);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [course?.code, storageReady, role]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1351,9 +1442,10 @@ function App() {
   return (
     <div className="app-shell">
       <Header course={course} role={role} onHome={() => setRole(null)} onExit={() => setRole(null)} />
+      {DATA_MODE === "supabase" && course && <RealtimeStatus status={realtimeStatus} />}
       {role === "student"
-        ? <StudentApp course={course} setCourse={setCourse} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
-        : <ProfessorApp course={course || initialCourseRef.current} setCourse={setCourse} courses={courses} ideologyStamps={ideologyStamps} setIdeologyStamps={setIdeologyStamps} onCreateCourse={createRegisteredCourse} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onArchiveCourse={archiveRegisteredCourse} initialTab={course ? professorStartTab : "create"} onExit={() => setRole(null)} notify={setToast} />}
+        ? <StudentApp course={course} setCourse={setCourse} onSaveRoundItem={saveActivityItem} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
+        : <ProfessorApp course={course || initialCourseRef.current} setCourse={setCourse} onSaveRound={saveActivityRound} onBumpReaction={changeActivityReaction} courses={courses} ideologyStamps={ideologyStamps} setIdeologyStamps={setIdeologyStamps} onCreateCourse={createRegisteredCourse} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onArchiveCourse={archiveRegisteredCourse} initialTab={course ? professorStartTab : "create"} onExit={() => setRole(null)} notify={setToast} />}
       {toast && <Toast>{toast}</Toast>}
     </div>
   );
@@ -1396,7 +1488,20 @@ function Header({ course, role, onHome, onExit }) {
   );
 }
 
-function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify }) {
+function RealtimeStatus({ status }) {
+  const states = {
+    IDLE: { className: "idle", text: "실시간 연결 대기 중" },
+    CONNECTING: { className: "connecting", text: "실시간 연결 중…" },
+    SUBSCRIBED: { className: "connected", text: "실시간 연결됨" },
+    CHANNEL_ERROR: { className: "error", text: "실시간 연결 오류 · 인터넷 연결을 확인해 주세요" },
+    TIMED_OUT: { className: "error", text: "실시간 연결 시간 초과 · 다시 연결 중입니다" },
+    CLOSED: { className: "error", text: "실시간 연결 종료 · 새로고침해 주세요" },
+  };
+  const state = states[status] || states.IDLE;
+  return <div className={`realtime-status ${state.className}`} role="status" aria-live="polite">{state.text}</div>;
+}
+
+function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamps, onExit, notify }) {
   const participantId = student?.id || "student-demo";
   const participantName = student?.name || "교육생";
   const myGoal = course.goals.find((goal) => goal.participantId === participantId);
@@ -1420,6 +1525,8 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
   const [goalDraft, setGoalDraft] = useState(null);
   const [answer, setAnswer] = useState("");
   const [selectedChoice, setSelectedChoice] = useState("");
+  const [answerPending, setAnswerPending] = useState(false);
+  const answerPendingRef = useRef(false);
   const [studentRoleplayText, setStudentRoleplayText] = useState("");
   const [studentRoleplayStep, setStudentRoleplayStep] = useState(1);
   const [studentFollowupQuestions, setStudentFollowupQuestions] = useState([]);
@@ -1541,32 +1648,39 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
     );
   };
 
-  const submitAnswer = () => {
+  const submitAnswer = async () => {
+    if (answerPendingRef.current || !activeRound) return;
     if (phase !== "active") return notify("실시간 질문은 교육 중에만 응답할 수 있습니다.");
     const isObjective = activeRound?.questionType === "objective";
     if (isObjective && !selectedChoice) return notify("답변 항목을 선택해주세요.");
     if (!isObjective && !answer.trim()) return notify("답변을 입력해주세요.");
-    setCourse((c) => ({
-      ...c,
-      rounds: c.rounds.map((r) => r.id === activeRound.id ? {
-        ...r,
-        items: [...r.items, {
-          id: uid("item"),
-          participantId,
-          by: participantName,
-          classId,
-          className,
-          text: isObjective ? selectedChoice : answer.trim(),
-          choice: isObjective ? selectedChoice : undefined,
-          reactions: {},
-          createdAt: now(),
-        }],
-      } : r),
-    }));
-    setAnswer("");
-    setSelectedChoice("");
-    setView("home");
-    notify("답변을 제출했습니다.");
+    const item = {
+      id: crypto.randomUUID(),
+      participantId,
+      by: participantName,
+      classId,
+      className,
+      text: isObjective ? selectedChoice : answer.trim(),
+      choice: isObjective ? selectedChoice : undefined,
+      reactions: {},
+      createdAt: now(),
+    };
+    answerPendingRef.current = true;
+    setAnswerPending(true);
+    try {
+      const result = await onSaveRoundItem(course, activeRound, item);
+      if (!result.ok) {
+        notify("답변이 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
+      setAnswer("");
+      setSelectedChoice("");
+      setView("home");
+      notify("답변을 제출했습니다.");
+    } finally {
+      answerPendingRef.current = false;
+      setAnswerPending(false);
+    }
   };
 
   const saveAchievement = () => {
@@ -1765,14 +1879,14 @@ function StudentApp({ course, setCourse, student, ideologyStamps, onExit, notify
           {activeRound.questionType === "objective"
             ? <div className="student-choice-list">{activeRound.options.map((option) => <button key={option} className={selectedChoice === option ? "selected" : ""} onClick={() => setSelectedChoice(option)}>{option}</button>)}</div>
             : <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="정답보다 현장의 생각을 솔직하게 적어주세요." aria-label="강사 질문 답변" />}
-          <PanelActions onBack={() => setView("home")} onSave={submitAnswer} saveLabel="답변 제출하기" />
+          <PanelActions onBack={() => setView("home")} onSave={submitAnswer} saveLabel={answerPending ? "제출 중…" : "답변 제출하기"} disabled={answerPending} />
         </ActionPanel>
       )}
       {phase === "active" && view === "home" && (
         <>
           {course.type === "job"
             ? <StudentJobReflection course={course} setCourse={setCourse} student={student} notify={notify} />
-            : <StudentBoardArea rounds={boardRounds} course={course} setCourse={setCourse} student={student} notify={notify} />}
+            : <StudentBoardArea rounds={boardRounds} course={course} onSaveRoundItem={onSaveRoundItem} student={student} notify={notify} />}
           {course.type === "newbie" && course.roleplayConfig?.enabled && course.roleplayConfig.classId === classId && (
             <section className="student-roleplay-card">
               <div><span className="eyebrow">신규직원 개인 훈련</span><h2>AI 보고 훈련</h2><p>{course.roleplayConfig.scenario} · {course.roleplayConfig.difficulty} 난이도</p></div>
@@ -2287,38 +2401,48 @@ function JobChoiceField({ number, title, options, value, onChange }) {
   return <fieldset className="job-choice-field"><legend>{number}. {title}</legend><div>{options.map((option) => <button type="button" key={option.value} className={value === option.value ? "selected" : ""} onClick={() => onChange(option.value)}>{option.label}</button>)}</div></fieldset>;
 }
 
-function StudentBoardArea({ rounds, setCourse, student, notify }) {
+function StudentBoardArea({ rounds, course, onSaveRoundItem, student, notify }) {
   const participantId = student?.id || "student-demo";
   const classId = student?.classId || "class-1";
   const className = student?.className || "1반";
   const [teamNames, setTeamNames] = useState({});
+  const [uploadingRounds, setUploadingRounds] = useState(() => new Set());
+  const uploadingRoundsRef = useRef(new Set());
   const upload = async (round, file) => {
-    if (!file) return;
+    if (!file || uploadingRoundsRef.current.has(round.id)) return;
     const team = (teamNames[round.id] || "").trim();
     if (!team) return notify("팀명을 먼저 입력해주세요.");
+    uploadingRoundsRef.current.add(round.id);
+    setUploadingRounds((current) => new Set(current).add(round.id));
     try {
       const imageResult = await putImage(file, { maxSize: 1280, quality: 0.8, courseId: round.courseId, roundId: round.id });
       if (!imageResult.ok) throw new Error(imageResult.error);
-      setCourse((current) => ({
-        ...current,
-        rounds: current.rounds.map((item) => item.id === round.id ? {
-          ...item,
-          items: [...item.items, {
-            id: uid("board"),
-            participantId,
-            by: team,
-            classId,
-            className,
-            url: imageResult.url,
-            text: `${team} 장표 업로드`,
-            reactions: {},
-            createdAt: now(),
-          }],
-        } : item),
-      }));
+      const result = await onSaveRoundItem(course, round, {
+        id: crypto.randomUUID(),
+        participantId,
+        by: team,
+        classId,
+        className,
+        url: imageResult.url,
+        text: `${team} 장표 업로드`,
+        reactions: {},
+        createdAt: now(),
+      });
+      if (!result.ok) {
+        notify("장표가 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
       notify(`${round.prompt}에 ${team} 장표를 업로드했습니다.`);
-    } catch {
+    } catch (error) {
+      console.error("장표 제출에 실패했습니다.", error);
       notify("이미지 저장 중 문제가 발생했습니다. 사진 크기를 줄이거나 다시 선택해주세요.");
+    } finally {
+      uploadingRoundsRef.current.delete(round.id);
+      setUploadingRounds((current) => {
+        const next = new Set(current);
+        next.delete(round.id);
+        return next;
+      });
     }
   };
   if (!rounds.length) return null;
@@ -2330,12 +2454,13 @@ function StudentBoardArea({ rounds, setCourse, student, notify }) {
       <div className="student-board-modules">
         {rounds.map((round) => {
           const mine = round.items.find((item) => item.participantId === participantId);
+          const isUploading = uploadingRounds.has(round.id);
           return (
             <article key={round.id}>
-              <div><span>{mine ? "✓ 업로드 완료" : "업로드 대기"}</span><h3>{round.prompt}</h3><p>{round.description || "팀 장표를 사진으로 촬영해 제출해주세요."}</p></div>
+              <div><span>{mine ? "✓ 업로드 완료" : isUploading ? "업로드 중…" : "업로드 대기"}</span><h3>{round.prompt}</h3><p>{round.description || "팀 장표를 사진으로 촬영해 제출해주세요."}</p></div>
               {!mine ? <>
-                <input value={teamNames[round.id] || ""} onChange={(e) => setTeamNames({ ...teamNames, [round.id]: e.target.value })} placeholder="팀명" />
-                <label className="secondary board-file-button">장표 사진 선택<input type="file" accept="image/*" onChange={(e) => upload(round, e.target.files?.[0])} /></label>
+                <input disabled={isUploading} value={teamNames[round.id] || ""} onChange={(e) => setTeamNames({ ...teamNames, [round.id]: e.target.value })} placeholder="팀명" />
+                <label className={`secondary board-file-button${isUploading ? " is-disabled" : ""}`}>{isUploading ? "저장 중…" : "장표 사진 선택"}<input disabled={isUploading} type="file" accept="image/*" onChange={(e) => { const input = e.currentTarget; void upload(round, input.files?.[0]).finally(() => { input.value = ""; }); }} /></label>
               </> : (mine.url || mine.imageUrl) && <img src={mine.url || mine.imageUrl} alt={`${mine.by} 장표`} />}
             </article>
           );
@@ -2349,7 +2474,7 @@ function PageBack({ onClick }) {
   return <button className="page-back" onClick={onClick} aria-label="이전 화면으로 돌아가기">← 바로 이전</button>;
 }
 
-function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyStamps, onCreateCourse, onSelectCourse, onUpdateCourse, onArchiveCourse, initialTab, onExit, notify }) {
+function ProfessorApp({ course, setCourse, onSaveRound, onBumpReaction, courses, ideologyStamps, setIdeologyStamps, onCreateCourse, onSelectCourse, onUpdateCourse, onArchiveCourse, initialTab, onExit, notify }) {
   const [tab, setTab] = useState(initialTab || "dashboard");
   const [selectedClassFilter, setSelectedClassFilter] = useState(course.classes?.[0]?.id || "class-1");
   const [analysis, setAnalysis] = useState(null);
@@ -2361,6 +2486,11 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
   const [selectedBoardRound, setSelectedBoardRound] = useState("");
   const [expandedBoard, setExpandedBoard] = useState(null);
   const [boardAnalysis, setBoardAnalysis] = useState(null);
+  const [roundPending, setRoundPending] = useState(false);
+  const [pendingReactions, setPendingReactions] = useState(() => new Set());
+  const [reactedItems, setReactedItems] = useState(() => new Set());
+  const roundPendingRef = useRef(false);
+  const pendingReactionsRef = useRef(new Set());
   const [newCourse, setNewCourse] = useState({
     type: "ideology",
     name: "",
@@ -2392,6 +2522,11 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
   useEffect(() => {
     setSelectedClassFilter(course.classes?.[0]?.id || "class-1");
     setAnalysis(null);
+    roundPendingRef.current = false;
+    pendingReactionsRef.current.clear();
+    setRoundPending(false);
+    setPendingReactions(new Set());
+    setReactedItems(new Set());
   }, [course.code]);
   const selectedClass = course.classes.find((item) => item.id === selectedClassFilter) || course.classes[0];
   const operationsOpen = phase === "active";
@@ -2414,48 +2549,79 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
     return true;
   };
 
-  const react = (roundId, itemId, key) => {
-    setCourse((c) => ({
-      ...c,
-      rounds: c.rounds.map((round) => round.id === roundId ? {
-        ...round,
-        items: round.items.map((item) => item.id === itemId ? { ...item, reactions: { ...item.reactions, [key]: (item.reactions?.[key] || 0) + 1 } } : item),
-      } : round),
-    }));
+  const react = async (roundId, itemId, key) => {
+    if (key !== "agree" || pendingReactionsRef.current.has(itemId)) return;
+    const item = course.rounds.find((round) => round.id === roundId)?.items.find((currentItem) => currentItem.id === itemId);
+    if (!item) return notify("반응할 답변을 찾지 못했습니다.");
+    const isCancelling = reactedItems.has(itemId);
+    const delta = isCancelling ? -1 : 1;
+    pendingReactionsRef.current.add(itemId);
+    setPendingReactions((current) => new Set(current).add(itemId));
+    try {
+      const result = await onBumpReaction(course, roundId, itemId, key, delta, item.reactions || {});
+      if (!result.ok) {
+        notify("공감 반응을 저장하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
+      setReactedItems((current) => {
+        const next = new Set(current);
+        if (isCancelling) next.delete(itemId);
+        else next.add(itemId);
+        return next;
+      });
+    } finally {
+      pendingReactionsRef.current.delete(itemId);
+      setPendingReactions((current) => {
+        const next = new Set(current);
+        next.delete(itemId);
+        return next;
+      });
+    }
   };
 
-  const createQuestion = () => {
+  const createQuestion = async () => {
+    if (roundPendingRef.current) return;
     if (!operationsOpen) return notify("실시간 질문은 교육 중 단계에서만 열 수 있습니다.");
     if (!questionDraft.prompt.trim()) return notify("질문 내용을 입력해주세요.");
     const options = questionDraft.options.map((item) => item.trim()).filter(Boolean);
     if (questionDraft.type === "objective" && options.length < 2) return notify("객관식 항목을 2개 이상 입력해주세요.");
-    setCourse((c) => ({
-      ...c,
-      rounds: [...c.rounds, {
-        id: uid("poll"),
-        kind: "poll",
-        questionType: questionDraft.type,
-        questionIntent: questionDraft.intent,
-        prompt: questionDraft.prompt.trim(),
-        options: questionDraft.type === "objective" ? options : [],
-        anonymous: questionDraft.anonymous === true,
-        courseId: c.code,
-        scope: "class",
-        classId: selectedClass.id,
-        className: selectedClass.name,
-        items: [],
-        createdAt: now(),
-      }],
-    }));
-    setQuestionDraft({ type: "subjective", intent: "general", prompt: "", options: ["", ""], anonymous: false });
-    notify(`${selectedClass.name} 교육생에게 실시간 질문을 열었습니다.`);
+    const created = {
+      id: crypto.randomUUID(),
+      kind: "poll",
+      questionType: questionDraft.type,
+      questionIntent: questionDraft.intent,
+      prompt: questionDraft.prompt.trim(),
+      options: questionDraft.type === "objective" ? options : [],
+      anonymous: questionDraft.anonymous === true,
+      courseId: course.code,
+      scope: "class",
+      classId: selectedClass.id,
+      className: selectedClass.name,
+      items: [],
+      createdAt: now(),
+    };
+    roundPendingRef.current = true;
+    setRoundPending(true);
+    try {
+      const result = await onSaveRound(course, created);
+      if (!result.ok) {
+        notify("질문이 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
+      setQuestionDraft({ type: "subjective", intent: "general", prompt: "", options: ["", ""], anonymous: false });
+      notify(`${selectedClass.name} 교육생에게 실시간 질문을 열었습니다.`);
+    } finally {
+      roundPendingRef.current = false;
+      setRoundPending(false);
+    }
   };
 
-  const createBoardModule = () => {
+  const createBoardModule = async () => {
+    if (roundPendingRef.current) return;
     if (!operationsOpen) return notify("장표 업로드 모듈은 교육 중 단계에서만 만들 수 있습니다.");
     if (!boardModule.title.trim()) return notify("장표 업로드 모듈명을 입력해주세요.");
     const created = {
-      id: uid("board"),
+      id: crypto.randomUUID(),
       courseId: course.code,
       kind: "board",
       prompt: boardModule.title.trim(),
@@ -2465,10 +2631,21 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
       items: [],
       createdAt: now(),
     };
-    setCourse((current) => ({ ...current, rounds: [...current.rounds, created] }));
-    setSelectedBoardRound(created.id);
-    setBoardModule({ title: "" });
-    notify(`${selectedClass.name} 장표 업로드 탭을 생성했습니다.`);
+    roundPendingRef.current = true;
+    setRoundPending(true);
+    try {
+      const result = await onSaveRound(course, created);
+      if (!result.ok) {
+        notify("장표 모듈이 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
+      setSelectedBoardRound(created.id);
+      setBoardModule({ title: "" });
+      notify(`${selectedClass.name} 장표 업로드 탭을 생성했습니다.`);
+    } finally {
+      roundPendingRef.current = false;
+      setRoundPending(false);
+    }
   };
 
   const analyzeBoards = (round, item) => {
@@ -2622,9 +2799,9 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
           <section className="content-card">
             <SectionTitle eyebrow="실시간 참여" title="교육생 질문 생성과 응답 현황" action={<button className="primary compact" disabled={!analysisEvidenceCount(filteredCourse)} onClick={() => { if (runAnalysis("poll")) setTab("ai"); }}>AI로 묶기</button>} />
             {operationsOpen
-              ? <><CurrentClassNotice className={selectedClass.name} action="질문이 개설됩니다." /><QuestionComposer value={questionDraft} onChange={setQuestionDraft} onSubmit={createQuestion} /></>
+              ? <><CurrentClassNotice className={selectedClass.name} action="질문이 개설됩니다." /><QuestionComposer value={questionDraft} onChange={setQuestionDraft} onSubmit={createQuestion} isSubmitting={roundPending} /></>
               : <ProfessorReadOnlyNotice phase={phase} action="기존 질문과 응답 조회" />}
-            {filteredCourse.rounds.filter((r) => r.kind === "poll").map((round) => <RoundView key={round.id} round={round} onReact={react} />)}
+            {filteredCourse.rounds.filter((r) => r.kind === "poll").map((round) => <RoundView key={round.id} round={round} onReact={react} pendingReactionIds={pendingReactions} reactedItemIds={reactedItems} />)}
           </section>
         )}
         {tab === "board" && (
@@ -2632,7 +2809,7 @@ function ProfessorApp({ course, setCourse, courses, ideologyStamps, setIdeologyS
             {course.type === "job" ? <ProfessorJobReflection course={course} setCourse={setCourse} notify={notify} classFilter={selectedClassFilter} participantCount={filteredParticipantCount} readOnly={!operationsOpen} /> : <>
               <SectionTitle eyebrow="팀 학습" title="모듈별 장표 발표·AI 분석" />
               {operationsOpen
-                ? <><CurrentClassNotice className={selectedClass.name} action="장표 모듈이 개설됩니다." /><BoardModuleCreator value={boardModule} onChange={setBoardModule} onSubmit={createBoardModule} /></>
+                ? <><CurrentClassNotice className={selectedClass.name} action="장표 모듈이 개설됩니다." /><BoardModuleCreator value={boardModule} onChange={setBoardModule} onSubmit={createBoardModule} isSubmitting={roundPending} /></>
                 : <ProfessorReadOnlyNotice phase={phase} action="기존 장표와 분석 결과 조회" />}
               <ProfessorBoardGallery
                 rounds={filteredCourse.rounds.filter((round) => round.kind === "board")}
@@ -3111,35 +3288,35 @@ function CourseRegistrationForm({ value, onChange, onSubmit, isCreating, issuedC
   );
 }
 
-function QuestionComposer({ value, onChange, onSubmit }) {
+function QuestionComposer({ value, onChange, onSubmit, isSubmitting = false }) {
   const updateOption = (index, text) => onChange({ ...value, options: value.options.map((item, i) => i === index ? text : item) });
   return (
     <div className="question-composer">
       <div className="composer-type">
-        <button className={value.type === "subjective" ? "selected" : ""} onClick={() => onChange({ ...value, type: "subjective" })}>주관식</button>
-        <button className={value.type === "objective" ? "selected" : ""} onClick={() => onChange({ ...value, type: "objective" })}>객관식</button>
+        <button disabled={isSubmitting} className={value.type === "subjective" ? "selected" : ""} onClick={() => onChange({ ...value, type: "subjective" })}>주관식</button>
+        <button disabled={isSubmitting} className={value.type === "objective" ? "selected" : ""} onClick={() => onChange({ ...value, type: "objective" })}>객관식</button>
       </div>
-      <textarea value={value.prompt} onChange={(e) => onChange({ ...value, prompt: e.target.value })} placeholder="교육생에게 실시간으로 제시할 질문을 입력하세요." aria-label="실시간 질문 내용 입력" />
+      <textarea disabled={isSubmitting} value={value.prompt} onChange={(e) => onChange({ ...value, prompt: e.target.value })} placeholder="교육생에게 실시간으로 제시할 질문을 입력하세요." aria-label="실시간 질문 내용 입력" />
       <label className="anonymous-toggle">
-        <input type="checkbox" checked={value.anonymous === true} onChange={(e) => onChange({ ...value, anonymous: e.target.checked })} />
+        <input disabled={isSubmitting} type="checkbox" checked={value.anonymous === true} onChange={(e) => onChange({ ...value, anonymous: e.target.checked })} />
         <span>🙈 익명으로 받기</span>
       </label>
       {value.type === "objective" && (
         <div className="option-editor">
-          {value.options.map((option, index) => <input key={index} value={option} onChange={(e) => updateOption(index, e.target.value)} placeholder={`답변 항목 ${index + 1}`} aria-label={`객관식 답변 항목 ${index + 1}`} />)}
-          <button className="ghost" onClick={() => onChange({ ...value, options: [...value.options, ""] })}>＋ 항목 추가</button>
+          {value.options.map((option, index) => <input disabled={isSubmitting} key={index} value={option} onChange={(e) => updateOption(index, e.target.value)} placeholder={`답변 항목 ${index + 1}`} aria-label={`객관식 답변 항목 ${index + 1}`} />)}
+          <button disabled={isSubmitting} className="ghost" onClick={() => onChange({ ...value, options: [...value.options, ""] })}>＋ 항목 추가</button>
         </div>
       )}
-      <button className="primary" onClick={onSubmit}>질문 열기</button>
+      <button disabled={isSubmitting} className="primary" onClick={onSubmit}>{isSubmitting ? "질문 저장 중…" : "질문 열기"}</button>
     </div>
   );
 }
 
-function BoardModuleCreator({ value, onChange, onSubmit }) {
+function BoardModuleCreator({ value, onChange, onSubmit, isSubmitting = false }) {
   return (
     <div className="board-module-creator">
-      <input value={value.title} onChange={(e) => onChange({ ...value, title: e.target.value })} placeholder="모듈명 예: 2모듈 신뢰받는 농협인" aria-label="신규 장표 업로드 탭 모듈명" />
-      <button className="primary" onClick={onSubmit}>＋ 신규 장표 업로드 탭</button>
+      <input disabled={isSubmitting} value={value.title} onChange={(e) => onChange({ ...value, title: e.target.value })} placeholder="모듈명 예: 2모듈 신뢰받는 농협인" aria-label="신규 장표 업로드 탭 모듈명" />
+      <button disabled={isSubmitting} className="primary" onClick={onSubmit}>{isSubmitting ? "저장 중…" : "＋ 신규 장표 업로드 탭"}</button>
     </div>
   );
 }
@@ -3318,7 +3495,7 @@ function BoardLightbox({ item, onClose }) {
   );
 }
 
-function RoundView({ round, onReact }) {
+function RoundView({ round, onReact, pendingReactionIds = new Set(), reactedItemIds = new Set() }) {
   const boardRef = useRef(null);
   const detailsRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -3402,15 +3579,18 @@ function RoundView({ round, onReact }) {
       {roundHeader(questionTypeLabel)}
       <details ref={detailsRef} className="mobile-details"><summary>전체 응답 {round.items.length}건 보기</summary>
       <div className="response-wall-head"><b>전체 답변판</b><span>최대 30명의 답변을 한 화면에서 함께 봅니다.</span></div>
-      <div className="response-wall">{visibleItems.map((item, index) => (
+      <div className="response-wall">{visibleItems.map((item, index) => {
+        const isPending = pendingReactionIds.has(item.id);
+        const isReacted = reactedItemIds.has(item.id);
+        return (
         <article className="response-wall-item" key={item.id}>
           <div className="response-meta"><b>{participantLabel(item)}</b><span>{new Date(item.createdAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</span>{index === 0 && reactionScore(item) > 0 && <em>공감 1위</em>}</div>
           <p>{item.text}</p>
-          <button className="like-button" onClick={() => onReact(round.id, item.id, "agree")} aria-label={`${participantLabel(item)} 답변에 공감`}>
-            <span>👍</span> 공감 <b>{item.reactions?.agree || 0}</b>
+          <button disabled={isPending} className={`like-button${isReacted ? " active" : ""}`} onClick={() => onReact(round.id, item.id, "agree")} aria-pressed={isReacted} aria-label={`${participantLabel(item)} 답변에 ${isReacted ? "공감 취소" : "공감"}`}>
+            <span>👍</span> {isPending ? "저장 중" : isReacted ? "공감 취소" : "공감"} <b>{item.reactions?.agree || 0}</b>
           </button>
         </article>
-      ))}</div>
+      );})}</div>
       {!visibleItems.length && <div className="board-empty">교육생 답변을 기다리고 있습니다.</div>}
       {round.items.length > 30 && <p className="response-limit-note">최근 공감순 30개를 표시하고 있습니다. 전체 응답 수는 {round.items.length}명입니다.</p>}
       </details>
@@ -3521,7 +3701,7 @@ function Progress({ steps }) {
   return <div className="progress"><div><span>성과 여정</span><b>{complete}/4</b></div><div className="progress-track"><i style={{ width: `${complete * 25}%` }} /></div></div>;
 }
 function ActionPanel({ title, eyebrow, children }) { return <section className="action-panel"><span className="eyebrow">{eyebrow}</span><h2>{title}</h2>{children}</section>; }
-function PanelActions({ onBack, onSave, saveLabel }) { return <div className="panel-actions"><button className="ghost" onClick={onBack}>← 돌아가기</button>{onSave && <button className="primary" onClick={onSave}>{saveLabel}</button>}</div>; }
+function PanelActions({ onBack, onSave, saveLabel, disabled = false }) { return <div className="panel-actions"><button disabled={disabled} className="ghost" onClick={onBack}>← 돌아가기</button>{onSave && <button disabled={disabled} className="primary" onClick={onSave}>{saveLabel}</button>}</div>; }
 function SectionTitle({ eyebrow, title, action }) { return <div className="section-title"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2></div>{action}</div>; }
 function Stat({ label, value }) { return <div className="stat"><span>{label}</span><b>{value}</b></div>; }
 function ReviewBadge() { return <span className="review-badge">교수요원 검토 필요</span>; }
