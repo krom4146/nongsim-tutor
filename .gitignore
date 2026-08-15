@@ -5,4 +5,5 @@ verify-dist/
 *.log
 .env
 .env.*
+!.env.example
 .vscode/

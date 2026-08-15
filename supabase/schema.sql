@@ -3,7 +3,7 @@
 -- 이 파일은 현재 DB 구조의 원본 기록입니다.
 -- 프로젝트를 새로 만들 경우 이 파일 전체를 SQL Editor에 붙여넣어 실행하면
 -- 동일한 구조가 복원됩니다.
--- 최종 수정: 2026-08-15 (STEP 5 통합 검수)
+-- 최종 수정: 2026-08-15 (OpenAI STEP 0)
 -- =====================================================================
 
 -- ---------- 1. 테이블 ----------
@@ -82,6 +82,32 @@ create table if not exists missions (
   created_at timestamptz default now()
 );
 
+-- AI 분석 결과·사용량 메타데이터. 원본 프롬프트와 전체 입력 payload는 저장하지 않는다.
+create table if not exists public.ai_analyses (
+  id uuid primary key default gen_random_uuid(),
+  course_code text not null references public.courses(code),
+  task text not null check (
+    task in (
+      'goalCohort',
+      'pollCluster',
+      'boardAnalysis',
+      'transferReport',
+      'missionDraft',
+      'reportFeedback'
+    )
+  ),
+  input_hash text not null,
+  result jsonb not null,
+  prompt_version text not null,
+  model text not null,
+  reasoning_effort text,
+  input_tokens integer,
+  output_tokens integer,
+  openai_request_id text,
+  created_at timestamptz not null default now(),
+  unique (course_code, task, input_hash, prompt_version, model)
+);
+
 -- ---------- 2. 인덱스 ----------
 
 create index if not exists idx_rounds_course on rounds(course_code);
@@ -89,6 +115,8 @@ create index if not exists idx_items_round on round_items(round_id);
 create index if not exists idx_goals_course on goals(course_code);
 create index if not exists idx_surveys_course on surveys(course_code);
 create index if not exists idx_missions_course on missions(course_code);
+create index if not exists ai_analyses_course_created_idx
+  on public.ai_analyses (course_code, created_at desc);
 
 -- ---------- 3. RLS 활성화 ----------
 
@@ -98,6 +126,7 @@ alter table round_items enable row level security;
 alter table goals       enable row level security;
 alter table surveys     enable row level security;
 alter table missions    enable row level security;
+alter table public.ai_analyses enable row level security;
 
 -- ---------- 4. 접근 정책 (심사 데모 단계) ----------
 -- 읽기·추가·수정은 허용하되 삭제는 차단하여 사고를 방지한다.
@@ -197,6 +226,10 @@ to anon, authenticated;
 grant select, insert
 on table public.surveys
 to anon, authenticated;
+
+-- AI 분석은 서버 전용 secret key가 사용하는 service_role만 접근한다.
+revoke all on table public.ai_analyses from anon, authenticated;
+grant select, insert on table public.ai_analyses to service_role;
 
 drop policy if exists "demo_update_goals" on public.goals;
 create policy "demo_update_goals"
