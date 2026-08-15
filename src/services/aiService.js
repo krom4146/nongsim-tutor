@@ -39,10 +39,34 @@ export function buildGoalComposeRequest(course, questions, answers) {
   };
 }
 
+export function buildTransferReportRequest(course, participantCount, classInfo) {
+  const surveys = course.surveys || [];
+  return {
+    task: "transferReport",
+    courseCode: course.code,
+    payload: {
+      classId: classInfo?.id || null,
+      className: classInfo?.name || null,
+      participantCount: Number(participantCount) || 0,
+      surveys: surveys.map((survey, index) => ({
+        sourceId: `survey-${String(index + 1).padStart(2, "0")}`,
+        likert: (survey.likert || []).map((value) => Number(value)),
+        barriers: [...new Set((survey.barriers || []).map((barrier) => String(barrier).trim()).filter(Boolean))],
+        applied: String(survey.applied || "").trim(),
+        support: String(survey.support || "").trim(),
+      })),
+    },
+  };
+}
+
 export function requestGoalCohortAnalysis(course, classInfo, options) {
   return requestAI(buildGoalCohortRequest(course, classInfo), options);
 }
 
 export function requestGoalCompose(course, questions, answers, options) {
   return requestAI(buildGoalComposeRequest(course, questions, answers), options);
+}
+
+export function requestTransferReport(course, participantCount, classInfo, options) {
+  return requestAI(buildTransferReportRequest(course, participantCount, classInfo), options);
 }

@@ -794,6 +794,9 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .summary-head > span { font-weight: 900; color: var(--green); }
 .report-summary p { margin: 8px 0 0; line-height: 1.65; }
 .transfer-report-summary { margin: 16px 0; }
+.transfer-ai-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.transfer-ai-toolbar .ai-result-meta { flex: 1; margin: 0; }
+.transfer-ai-toolbar > button { flex: 0 0 auto; }
 .transfer-case-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
 .transfer-case-grid article { padding: 16px; border: 1px solid rgba(150,170,140,.28); border-radius: 14px; background: #fbfaf3; }
 .transfer-case-grid h3 { margin: 0 0 8px; color: var(--deep); font-size: 14px; }
@@ -808,6 +811,7 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .barrier-summary div:first-of-type { border-top: 0; }
 .barrier-summary b { color: var(--deep); white-space: nowrap; }
 .manager-action-warning { margin-top: 12px; padding: 14px 15px; border: 1px solid #ead8a2; border-radius: 14px; color: #755915; background: #fff8df; font-size: 13px; line-height: 1.55; font-weight: 800; }
+.transfer-actions { margin-top: 16px; }
 .transfer-report-footnote { margin: 12px 0 0; color: #758178; font-size: 11px; line-height: 1.55; }
 .followup-push-demo { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; margin: 14px 0; padding: 15px; border: 1px dashed rgba(150,170,140,.35); border-radius: 16px; background: #fbfaf3; }
 .followup-push-demo h3 { margin: 4px 0 5px; color: var(--deep); font-size: 15px; }
@@ -1854,6 +1858,8 @@ select:focus {
   .followup-demo-actions button {
     width: 100%;
   }
+  .transfer-ai-toolbar { align-items: stretch; flex-direction: column; }
+  .transfer-ai-toolbar > button { width: 100%; }
   .content-card,
   .action-panel,
   .today-tasks-card,

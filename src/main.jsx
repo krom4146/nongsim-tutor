@@ -25,6 +25,7 @@ import {
   getAIConfigurationError,
   requestGoalCohortAnalysis,
   requestGoalCompose,
+  requestTransferReport,
 } from "./services/aiService";
 import {
   anonymizeCsvRows,
@@ -3250,7 +3251,7 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
             {reportRefreshStatus === "ready" && <>
               <div className="transfer-stats"><Stat label="수료 성찰" value={formatSubmissionCount(filteredCourse.achievements.length, filteredParticipantCount)} /><Stat label="현업활용도 응답" value={formatSubmissionCount(filteredCourse.surveys.length, filteredParticipantCount)} /><Stat label="평균 적용도" value={formatAverageLikert(filteredCourse.surveys)} /></div>
               <ClassSubmissionSummary course={course} />
-              <TransferReportSummary course={filteredCourse} participantCount={filteredParticipantCount} />
+              <TransferReportSummary course={filteredCourse} participantCount={filteredParticipantCount} classInfo={selectedClass} />
             </>}
             <FollowupPushDemo status={pushStatus} onStart={startPushDemo} onOpen={openFollowupSurveyDemo} />
             <div className="export-row">
@@ -3349,30 +3350,101 @@ function FollowupPushDemo({ status, onStart, onOpen }) {
   );
 }
 
-function TransferReportSummary({ course, participantCount }) {
+function buildTransferReportMock(course, participantCount) {
   const surveys = course.surveys || [];
-  const achievements = course.achievements || [];
   const anonymousSurveys = anonymizeSurveyResponses(surveys, transferQuestions);
-  const appliedTexts = anonymousSurveys.filter((item) => item.applied).slice(0, 3);
-  const supportTexts = anonymousSurveys.filter((item) => item.support).slice(0, 3);
   const barrierCounts = surveys.reduce((acc, survey) => {
     (survey.barriers || []).forEach((barrier) => {
       acc[barrier] = (acc[barrier] || 0) + 1;
     });
     return acc;
   }, {});
-  const topBarriers = Object.entries(barrierCounts).sort((a, b) => b[1] - a[1]);
-  const supportBarrierRatio = surveys.length ? (barrierCounts["상사·동료의 지원 부족"] || 0) / surveys.length : 0;
   const likertSum = (survey) => (survey.likert || []).reduce((sum, value) => sum + (Number(value) || 0), 0);
-  const withApplied = surveys.filter((item) => (item.applied || "").trim());
-  const withSupport = surveys.filter((item) => (item.support || "").trim());
-  // 8월 API 연동 시: 사례 선정을 AI 응답 스키마(successCase/blockedCase)로 대체
-  const bestCase = withApplied.length
-    ? [...withApplied].sort((a, b) => likertSum(b) - likertSum(a))[0].applied
-    : "아직 구체적인 적용 사례가 충분히 수집되지 않았습니다.";
-  const blockedCase = withSupport.length
-    ? [...withSupport].sort((a, b) => likertSum(a) - likertSum(b))[0].support
-    : topBarriers[0]?.[0] || "아직 적용을 막은 요인이 충분히 수집되지 않았습니다.";
+  const ranked = surveys.map((survey, index) => ({ survey, index, score: likertSum(survey) }));
+  const best = [...ranked].sort((a, b) => b.score - a.score)[0];
+  const blocked = [...ranked].sort((a, b) => a.score - b.score)[0];
+  const evidence = (entry, field) => entry ? [{
+    by: `응답자 ${entry.index + 1}`,
+    quote: entry.survey[field] || entry.survey.barriers?.join(", ") || "응답 내용이 없습니다.",
+  }] : [];
+  return {
+    summary: `현업활용도 응답은 ${formatSubmissionCount(surveys.length, participantCount)} 제출되었습니다. 평균 적용도는 ${formatAverageLikert(surveys)}이며, 개인 평가가 아니라 다음 교육과 현업 지원을 개선하기 위한 집계 참고자료로 활용합니다.`,
+    successCase: { evidence: evidence(best, "applied") },
+    blockedCase: { evidence: evidence(blocked, "support") },
+    appliedHighlights: anonymousSurveys.filter((item) => item.applied).slice(0, 3).map((item) => ({
+      evidence: [{ by: item.label, quote: item.applied }],
+    })),
+    supportHighlights: anonymousSurveys.filter((item) => item.support).slice(0, 3).map((item) => ({
+      evidence: [{ by: item.label, quote: item.support }],
+    })),
+    barriers: Object.entries(barrierCounts).sort((a, b) => b[1] - a[1]).map(([label, count]) => ({ label, count })),
+    recommendedActions: ["적용 사례와 필요한 지원을 함께 확인하고 다음 과정 운영에 반영하세요."],
+    dataWarning: surveys.length < 3 ? "응답 수가 적어 교육 전이의 공통 경향이나 인과로 일반화하기 어렵습니다." : null,
+    generatedAt: now(),
+    meta: { mode: "mock", source: "mock", persisted: false },
+  };
+}
+
+function TransferReportSummary({ course, participantCount, classInfo }) {
+  const surveys = course.surveys || [];
+  const [analysis, setAnalysis] = useState(null);
+  const [analysisStatus, setAnalysisStatus] = useState("idle");
+  const [analysisError, setAnalysisError] = useState("");
+  const requestRef = useRef(0);
+  const pendingRef = useRef(false);
+  const abortRef = useRef(null);
+
+  const runTransferAnalysis = useCallback(async () => {
+    if (!surveys.length || pendingRef.current) return;
+    const requestId = requestRef.current + 1;
+    requestRef.current = requestId;
+    abortRef.current?.abort();
+    setAnalysisError("");
+
+    if (AI_MODE === "mock") {
+      setAnalysis(buildTransferReportMock(course, participantCount));
+      setAnalysisStatus("ready");
+      return;
+    }
+
+    const configurationError = getAIConfigurationError();
+    if (configurationError) {
+      setAnalysisStatus("error");
+      setAnalysisError(configurationError);
+      return;
+    }
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    pendingRef.current = true;
+    setAnalysisStatus("loading");
+    try {
+      const result = await requestTransferReport(course, participantCount, classInfo, { signal: controller.signal });
+      if (requestRef.current !== requestId) return;
+      setAnalysis(result);
+      setAnalysisStatus("ready");
+    } catch (error) {
+      if (requestRef.current !== requestId || error?.code === "REQUEST_CANCELLED") return;
+      setAnalysisStatus("error");
+      setAnalysisError(error?.message || "AI 전이 리포트를 생성하지 못했습니다. 다시 시도해 주세요.");
+    } finally {
+      if (requestRef.current === requestId) {
+        pendingRef.current = false;
+        abortRef.current = null;
+      }
+    }
+  }, [classInfo, course, participantCount, surveys.length]);
+
+  useEffect(() => {
+    void runTransferAnalysis();
+    return () => {
+      requestRef.current += 1;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      pendingRef.current = false;
+    };
+  }, [runTransferAnalysis]);
+
   if (!surveys.length) {
     return (
       <section className="transfer-report-summary">
@@ -3380,33 +3452,65 @@ function TransferReportSummary({ course, participantCount }) {
       </section>
     );
   }
+
+  if (!analysis && analysisStatus === "loading") {
+    return <section className="transfer-report-summary"><EmptyState title="현업활용도 응답을 AI로 분석하고 있습니다." description="완료까지 잠시 기다려 주세요." busy /></section>;
+  }
+
+  if (!analysis && analysisStatus === "error") {
+    return <section className="transfer-report-summary"><EmptyState title="AI 전이 리포트를 생성하지 못했습니다." description={analysisError} action="다시 시도" onClick={() => { void runTransferAnalysis(); }} role="alert" /></section>;
+  }
+
+  if (!analysis) return null;
+
+  const analysisLabel = analysis.meta?.mode === "mock"
+    ? "데모 분석(AI 미연결)"
+    : analysis.meta?.source === "cache" ? "AI 분석 · 캐시" : "실제 AI 분석";
+  const staleLabel = analysisStatus === "error" ? `이전 정상 분석 · ${analysisLabel}` : analysisLabel;
+  const successEvidence = analysis.successCase?.evidence || [];
+  const blockedEvidence = analysis.blockedCase?.evidence || [];
+  const appliedTexts = (analysis.appliedHighlights || []).flatMap((item) => item.evidence || []).slice(0, 3);
+  const supportTexts = (analysis.supportHighlights || []).flatMap((item) => item.evidence || []).slice(0, 3);
+  const topBarriers = analysis.barriers || [];
+  const supportBarrierRatio = surveys.length
+    ? (topBarriers.find((item) => item.label === "상사·동료의 지원 부족")?.count || 0) / surveys.length
+    : 0;
   return (
     <section className="transfer-report-summary">
+      <div className="transfer-ai-toolbar">
+        <div className="ai-result-meta"><span>{staleLabel}</span><b>설문 {surveys.length}건</b><time>{analysis.generatedAt ? new Date(analysis.generatedAt).toLocaleString("ko-KR") : "생성 시각 없음"}</time></div>
+        <button className="secondary compact" disabled={analysisStatus === "loading"} onClick={() => { void runTransferAnalysis(); }}>{analysisStatus === "loading" ? "분석 중…" : "분석 새로고침"}</button>
+      </div>
+      {analysisStatus === "loading" && <div className="goal-ai-state is-loading" role="status" aria-live="polite">새 전이 리포트를 생성하는 동안 이전 결과를 유지하고 있습니다.</div>}
+      {analysisStatus === "error" && <div className="goal-ai-state is-error" role="alert"><span>{analysisError} 이전 정상 분석을 유지합니다.</span><button className="secondary compact" onClick={() => { void runTransferAnalysis(); }}>다시 시도</button></div>}
+      {analysis.warning && <p className="ai-result-warning" role="status">{analysis.warning.message}</p>}
+      {analysis.dataWarning && <p className="ai-result-warning" role="status">{analysis.dataWarning}</p>}
       <div className="report-summary">
         <div className="ai-symbol">AI</div>
         <div>
           <div className="summary-head"><span>전이 리포트 요약</span><ReviewBadge /></div>
-          <p>현업활용도 응답은 {formatSubmissionCount(surveys.length, participantCount)} 제출되었습니다. 평균 적용도는 {formatAverageLikert(surveys)}이며, 개인 평가가 아니라 다음 교육과 현업 지원을 개선하기 위한 집계 참고자료로 활용합니다.</p>
+          <p>{analysis.summary}</p>
         </div>
       </div>
       <div className="transfer-case-grid">
-        <article><h3>✅ 가장 잘 적용된 사례</h3><p>“{bestCase}”</p></article>
-        <article><h3>⛔ 가장 막힌 사례</h3><p>“{blockedCase}”</p></article>
+        <article><h3>✅ 가장 잘 적용된 사례</h3>{successEvidence.length ? successEvidence.map((item, index) => <p key={`${item.by}-${index}`}><b>{item.by}</b> “{item.quote}”</p>) : <p>아직 구체적인 적용 사례가 충분히 수집되지 않았습니다.</p>}</article>
+        <article><h3>⛔ 가장 막힌 사례</h3>{blockedEvidence.length ? blockedEvidence.map((item, index) => <p key={`${item.by}-${index}`}><b>{item.by}</b> “{item.quote}”</p>) : <p>아직 적용을 막은 요인이 충분히 수집되지 않았습니다.</p>}</article>
       </div>
       <div className="transfer-insight-grid">
         <article>
           <h3>현업 적용 응답 요약</h3>
-          {appliedTexts.length ? appliedTexts.map((item) => <p key={item.label}><b>{item.label}</b> “{item.applied}”</p>) : <p>아직 구체적인 현업 적용 사례가 없습니다.</p>}
+          {appliedTexts.length ? appliedTexts.map((item, index) => <p key={`${item.by}-${index}`}><b>{item.by}</b> “{item.quote}”</p>) : <p>아직 구체적인 현업 적용 사례가 없습니다.</p>}
         </article>
         <article>
           <h3>과정 개선 포인트</h3>
-          {supportTexts.length ? supportTexts.map((item) => <p key={item.label}><b>{item.label}</b> “{item.support}”</p>) : <p>추가 지원 요구가 수집되면 이곳에 표시됩니다.</p>}
+          {supportTexts.length ? supportTexts.map((item, index) => <p key={`${item.by}-${index}`}><b>{item.by}</b> “{item.quote}”</p>) : <p>추가 지원 요구가 수집되면 이곳에 표시됩니다.</p>}
         </article>
       </div>
       <div className="barrier-summary">
         <h3>장애요인 빈도</h3>
-        {topBarriers.length ? topBarriers.map(([barrier, count]) => <div key={barrier}><span>{barrier}</span><b>{count}명</b></div>) : <p>아직 장애요인 응답이 없습니다.</p>}
+        {topBarriers.length ? topBarriers.map(({ label, count }) => <div key={label}><span>{label}</span><b>{count}명</b></div>) : <p>아직 장애요인 응답이 없습니다.</p>}
       </div>
+      <div className="report-section actions-section transfer-actions"><h3>추천 행동</h3><ol>{(analysis.recommendedActions || []).map((action, index) => <li key={`${action}-${index}`}><b>{index + 1}</b><span>{action}</span></li>)}</ol></div>
       {supportBarrierRatio >= 0.3 && (
         <div className="manager-action-warning">
           ⚠ 적용 장애의 상당수가 '환경(상사·동료 지원)'에 있습니다. 교육 추가보다 관리자 대상 안내·지원이 효과적일 수 있습니다.
