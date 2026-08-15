@@ -1,5 +1,14 @@
 import { requestAI } from "./aiClient.js";
 
+const POLL_QUESTION_INTENTS = new Set([
+  "general",
+  "understanding",
+  "misconception",
+  "application",
+  "dilemma",
+  "emotion",
+]);
+
 export {
   AI_MODE,
   AIServiceError,
@@ -59,6 +68,31 @@ export function buildTransferReportRequest(course, participantCount, classInfo) 
   };
 }
 
+export function buildPollClusterRequest(course, round) {
+  const responses = (round?.items || [])
+    .filter((item) => typeof item.text === "string" && item.text.trim())
+    .map((item, index) => ({
+      sourceId: `poll-${String(index + 1).padStart(2, "0")}`,
+      text: item.text.trim(),
+      agree: Math.max(0, Math.trunc(Number(item.reactions?.agree) || 0)),
+    }));
+
+  return {
+    task: "pollCluster",
+    courseCode: course.code,
+    payload: {
+      round: {
+        sourceId: "poll-round-01",
+        prompt: String(round?.prompt || "").trim(),
+        questionType: round?.questionType === "objective" ? "objective" : "subjective",
+        questionIntent: POLL_QUESTION_INTENTS.has(round?.questionIntent) ? round.questionIntent : "general",
+        anonymous: round?.anonymous === true,
+      },
+      responses,
+    },
+  };
+}
+
 export function requestGoalCohortAnalysis(course, classInfo, options) {
   return requestAI(buildGoalCohortRequest(course, classInfo), options);
 }
@@ -69,4 +103,8 @@ export function requestGoalCompose(course, questions, answers, options) {
 
 export function requestTransferReport(course, participantCount, classInfo, options) {
   return requestAI(buildTransferReportRequest(course, participantCount, classInfo), options);
+}
+
+export function requestPollCluster(course, round, options) {
+  return requestAI(buildPollClusterRequest(course, round), options);
 }

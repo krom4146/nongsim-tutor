@@ -105,6 +105,7 @@
 .analysis-readiness-card h2 { margin: 4px 0 8px; color: var(--deep); }
 .analysis-readiness-card p { margin: 0 0 8px; color: var(--muted); line-height: 1.6; }
 .analysis-readiness-card small { color: var(--sage-soft); }
+.analysis-readiness-card small + button { display: block; margin-top: 12px; }
 .ai-result-meta {
   display: flex;
   flex-wrap: wrap;
@@ -122,6 +123,8 @@
   color: var(--deep);
 }
 .ai-result-meta time { margin-left: auto; }
+.ai-analysis-scope { margin: 10px 0 0; padding: 11px 13px; border: 1px solid rgba(150,170,140,.28); border-radius: 12px; background: #fbfaf3; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.ai-analysis-scope b { margin-right: 6px; color: var(--deep); }
 .ai-result-warning {
   margin: 10px 0 0;
   padding: 10px 12px;
