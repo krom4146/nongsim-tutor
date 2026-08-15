@@ -21,6 +21,11 @@ import { DATA_MODE } from "./services/supabaseClient";
 import { subscribeCourse } from "./services/realtimeBridge";
 import { putImage } from "./services/fileStore";
 import {
+  AI_MODE,
+  getAIConfigurationError,
+  requestGoalCohortAnalysis,
+} from "./services/aiService";
+import {
   anonymizeCsvRows,
   anonymizeSurveyResponses,
   createReportCsvContent,
@@ -2649,6 +2654,10 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
   const [tab, setTab] = useState(initialTab || "dashboard");
   const [selectedClassFilter, setSelectedClassFilter] = useState(course.classes?.[0]?.id || "class-1");
   const [analysis, setAnalysis] = useState(null);
+  const [analysisKind, setAnalysisKind] = useState("all");
+  const [analysisStatus, setAnalysisStatus] = useState("idle");
+  const [analysisError, setAnalysisError] = useState("");
+  const analysisRequestRef = useRef(0);
   const [selectedScenario, setSelectedScenario] = useState(course.roleplayConfig?.scenario || "민원 발생 보고");
   const [difficulty, setDifficulty] = useState(course.roleplayConfig?.difficulty || "보통");
   const [pushStatus, setPushStatus] = useState("idle");
@@ -2707,8 +2716,12 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
   }, [tab, course.code, onReloadCourse, notify]);
 
   useEffect(() => {
+    analysisRequestRef.current += 1;
     setSelectedClassFilter(course.classes?.[0]?.id || "class-1");
     setAnalysis(null);
+    setAnalysisKind("all");
+    setAnalysisStatus("idle");
+    setAnalysisError("");
     roundPendingRef.current = false;
     pendingReactionsRef.current.clear();
     setRoundPending(false);
@@ -2730,14 +2743,60 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
     setTab(target);
   };
   const navigate = selectProfessorTab;
-  const runAnalysis = (kind = "all") => {
-    if (!analysisEvidenceCount(filteredCourse)) {
+  const runAnalysis = async (kind = "all") => {
+    const requestSequence = ++analysisRequestRef.current;
+    const evidenceCount = kind === "goals"
+      ? (filteredCourse.goals || []).length
+      : analysisEvidenceCount(filteredCourse);
+    setAnalysisKind(kind);
+    setAnalysisError("");
+    if (!evidenceCount) {
+      setAnalysis(null);
+      setAnalysisStatus("idle");
       notify("분석할 교육생 응답이 아직 없습니다.");
       return false;
     }
-    setAnalysis(buildAnalysis(filteredCourse, kind));
-    notify("제공된 응답만 근거로 AI 분석을 생성했습니다.");
-    return true;
+
+    if (kind !== "goals" || AI_MODE === "mock") {
+      setAnalysis(buildAnalysis(filteredCourse, kind));
+      setAnalysisStatus("ready");
+      notify("제공된 응답만 근거로 시연용 분석을 생성했습니다.");
+      return true;
+    }
+
+    const configurationError = getAIConfigurationError();
+    if (configurationError) {
+      setAnalysis(null);
+      setAnalysisStatus("error");
+      setAnalysisError(configurationError);
+      notify("AI 연결 설정을 확인해 주세요.");
+      return false;
+    }
+
+    setAnalysis(null);
+    setAnalysisStatus("loading");
+    try {
+      const result = await requestGoalCohortAnalysis(filteredCourse, selectedClass);
+      if (analysisRequestRef.current !== requestSequence) return false;
+      setAnalysis(result);
+      setAnalysisStatus("ready");
+      notify(result.meta?.source === "cache"
+        ? "저장된 목표 분석 결과를 불러왔습니다."
+        : "제공된 목표 응답만 근거로 AI 분석을 생성했습니다.");
+      return true;
+    } catch (error) {
+      if (analysisRequestRef.current !== requestSequence) return false;
+      setAnalysis(null);
+      setAnalysisStatus("error");
+      setAnalysisError(error?.message || "AI 분석을 완료하지 못했습니다.");
+      notify("AI 목표 분석을 완료하지 못했습니다.");
+      return false;
+    }
+  };
+
+  const openAnalysis = (kind = "all") => {
+    setTab("ai");
+    void runAnalysis(kind);
   };
 
   const react = async (roundId, itemId, key) => {
@@ -3006,17 +3065,17 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
           </div>
           <div className="course-head-actions"><span className={`phase-badge ${phase}`}>{({ before: "입교 전", active: "교육 중", completion: "수료일", followupWait: "현업 적용 대기", transfer: "교육 후" })[phase]}</span></div>
         </section>}
-        {tab !== "create" && (course.classCount || 1) > 1 && <ClassFilterTabs classes={course.classes} value={selectedClassFilter} onChange={(value) => { setSelectedClassFilter(value); setAnalysis(null); }} />}
+        {tab !== "create" && (course.classCount || 1) > 1 && <ClassFilterTabs classes={course.classes} value={selectedClassFilter} onChange={(value) => { analysisRequestRef.current += 1; setSelectedClassFilter(value); setAnalysis(null); setAnalysisStatus("idle"); setAnalysisError(""); }} />}
         {tab === "create" && <CourseRegistrationForm value={newCourse} onChange={setNewCourse} onSubmit={registerCourse} isCreating={isCreatingCourse} issuedCode={issuedCode} course={course} courses={courses} onSelectCourse={(selected) => { onSelectCourse(selected); setTab("dashboard"); }} onUpdateCourse={onUpdateCourse} onArchiveCourse={onArchiveCourse} notify={notify} />}
         {tab === "dashboard" && <>
           {course.type === "ideology" && phase === "active" && <OlympicActivityControl course={course} setCourse={setCourse} />}
           <OverallCourseSummary course={course} />
-          <ProfessorDashboard course={{ ...filteredCourse, participantCount: filteredParticipantCount }} phase={phase} onNavigate={navigate} onAnalyze={() => { if (runAnalysis()) setTab("ai"); }} />
+          <ProfessorDashboard course={{ ...filteredCourse, participantCount: filteredParticipantCount }} phase={phase} onNavigate={navigate} onAnalyze={() => openAnalysis("all")} />
         </>}
-        {tab === "goals" && <DataList title="입교 전 목표" items={filteredCourse.goals} onAnalyze={() => { if (runAnalysis("goals")) setTab("ai"); }} />}
+        {tab === "goals" && <DataList title="입교 전 목표" items={filteredCourse.goals} onAnalyze={() => openAnalysis("goals")} />}
         {tab === "live" && (
           <section className="content-card">
-            <SectionTitle eyebrow="실시간 참여" title="교육생 질문 생성과 응답 현황" action={<button className="primary compact" disabled={!analysisEvidenceCount(filteredCourse)} onClick={() => { if (runAnalysis("poll")) setTab("ai"); }}>AI로 묶기</button>} />
+            <SectionTitle eyebrow="실시간 참여" title="교육생 질문 생성과 응답 현황" action={<button className="primary compact" disabled={!analysisEvidenceCount(filteredCourse)} onClick={() => openAnalysis("poll")}>AI로 묶기</button>} />
             {operationsOpen
               ? <><CurrentClassNotice className={selectedClass.name} action="질문이 개설됩니다." /><QuestionComposer value={questionDraft} onChange={setQuestionDraft} onSubmit={createQuestion} isSubmitting={roundPending} /></>
               : <ProfessorReadOnlyNotice phase={phase} action="기존 질문과 응답 조회" />}
@@ -3044,10 +3103,14 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
         {tab === "stamps" && course.type === "ideology" && <ProfessorStampManager course={course} stamps={ideologyStamps.filter((item) => item.courseId === course.code)} setStamps={setIdeologyStamps} notify={notify} />}
         {tab === "ai" && (
           <section className="content-card">
-            <SectionTitle eyebrow="근거 기반 분석" title={`AI 교육 분석 리포트 · ${selectedClass.name}`} action={<button className="primary compact" disabled={!analysisEvidenceCount(filteredCourse)} onClick={() => runAnalysis()}>분석 새로고침</button>} />
+            <SectionTitle eyebrow="근거 기반 분석" title={`AI 교육 분석 리포트 · ${selectedClass.name}`} action={<button className="primary compact" disabled={!analysisEvidenceCount(filteredCourse) || analysisStatus === "loading"} onClick={() => { void runAnalysis(analysisKind); }}>{analysisStatus === "loading" ? "분석 중…" : "분석 새로고침"}</button>} />
             <OverallCourseSummary course={course} compact />
-            {analysis ? <AIEvidenceResult result={analysis} /> : analysisEvidenceCount(filteredCourse)
-              ? <EmptyState title="아직 생성된 분석이 없습니다." action={`${selectedClass.name} 분석하기`} onClick={() => runAnalysis()} />
+            {analysisStatus === "loading"
+              ? <EmptyState title="목표 응답을 AI로 분석하고 있습니다." description="완료까지 잠시 기다려 주세요." busy />
+              : analysisStatus === "error"
+                ? <EmptyState title="AI 분석을 완료하지 못했습니다." description={analysisError} action="다시 시도" onClick={() => { void runAnalysis(analysisKind); }} role="alert" />
+                : analysis ? <AIEvidenceResult result={analysis} /> : analysisEvidenceCount(filteredCourse)
+              ? <EmptyState title="아직 생성된 분석이 없습니다." action={`${selectedClass.name} 분석하기`} onClick={() => { void runAnalysis(analysisKind); }} />
               : <EmptyState title="분석할 교육생 응답이 아직 없습니다." />}
           </section>
         )}
@@ -3822,9 +3885,14 @@ function RoundView({ round, onReact, pendingReactionIds = new Set(), reactedItem
 }
 
 function AIEvidenceResult({ result }) {
+  const analysisLabel = result.meta?.mode === "ai"
+    ? result.meta.source === "cache" ? "AI 분석 · 캐시" : "실제 AI 분석"
+    : "시연용 분석";
   return (
     <div className="ai-report">
-      <div className="ai-result-meta"><span>시연용 분석</span><b>근거 {result.evidenceCount ?? result.evidence?.length ?? 0}건</b><time>{result.generatedAt ? new Date(result.generatedAt).toLocaleString("ko-KR") : "생성 시각 없음"}</time></div>
+      <div className="ai-result-meta"><span>{analysisLabel}</span><b>근거 {result.evidenceCount ?? result.evidence?.length ?? 0}건</b><time>{result.generatedAt ? new Date(result.generatedAt).toLocaleString("ko-KR") : "생성 시각 없음"}</time></div>
+      {result.warning && <p className="ai-result-warning" role="status">{result.warning.message}</p>}
+      {result.dataWarning && <p className="ai-result-warning" role="status">{result.dataWarning}</p>}
       <div className="report-summary"><div className="ai-symbol">AI</div><div><div className="summary-head"><span>AI 요약</span><ReviewBadge /></div><p>{result.summary}</p></div></div>
       <div className="report-section"><h3>핵심 주제 묶음</h3><div className="cluster-grid">{result.clusters.map((c) => <article key={c.title}><div><b>{c.title}</b><span>{c.count}개 응답</span></div><p>{c.insight}</p></article>)}</div></div>
       <div className="report-section"><h3>근거 원문</h3><p className="section-desc">아래 원문 안에서만 분석했습니다.</p><div className="evidence-list">{result.evidence.map((e, i) => <blockquote key={i}><span>{sourceLabel(e.source)} · {e.by || "익명"}</span><p>“{e.quote}”</p></blockquote>)}</div></div>
@@ -3928,7 +3996,7 @@ function PanelActions({ onBack, onSave, saveLabel, disabled = false }) { return 
 function SectionTitle({ eyebrow, title, action }) { return <div className="section-title"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2></div>{action}</div>; }
 function Stat({ label, value }) { return <div className="stat"><span>{label}</span><b>{value}</b></div>; }
 function ReviewBadge() { return <span className="review-badge">교수요원 검토 필요</span>; }
-function EmptyState({ title, action, onClick }) { return <div className="empty"><div>AI</div><h3>{title}</h3>{action && onClick && <button className="primary" onClick={onClick}>{action}</button>}</div>; }
+function EmptyState({ title, description, action, onClick, busy = false, role }) { return <div className="empty" role={role || (busy ? "status" : undefined)} aria-live={busy ? "polite" : undefined} aria-busy={busy || undefined}><div>AI</div><h3>{title}</h3>{description && <p>{description}</p>}{action && onClick && <button className="primary" onClick={onClick}>{action}</button>}</div>; }
 function Toast({ children }) { return <div className="toast" role="status" aria-live="polite" aria-atomic="true">{children}</div>; }
 function PrivacyFooter() { return <footer className="privacy-footer">입장용 이름 외 고객정보·계좌정보·회사기밀 입력 금지 · AI 결과는 교수요원의 검토 후 활용하세요.</footer>; }
 createRoot(document.getElementById("root")).render(<App />);

@@ -122,6 +122,15 @@
   color: var(--deep);
 }
 .ai-result-meta time { margin-left: auto; }
+.ai-result-warning {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff6dc;
+  color: #71530c;
+  font-size: 13px;
+  line-height: 1.55;
+}
 
 .overall-summary-head {
   display: flex;

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "build": {
+    "env": {
+      "VITE_AI_MODE": "live"
+    }
+  },
+  "functions": {
+    "api/ai.js": {
+      "maxDuration": 30
+    }
+  }
+}
