@@ -3,7 +3,7 @@
 -- 이 파일은 현재 DB 구조의 원본 기록입니다.
 -- 프로젝트를 새로 만들 경우 이 파일 전체를 SQL Editor에 붙여넣어 실행하면
 -- 동일한 구조가 복원됩니다.
--- 최종 수정: 2026-08-15
+-- 최종 수정: 2026-08-15 (STEP 5 통합 검수)
 -- =====================================================================
 
 -- ---------- 1. 테이블 ----------
@@ -56,12 +56,10 @@ create table if not exists goals (
   created_at timestamptz default now()
 );
 
--- 현업적용도 설문: 익명 원칙. 이름 없음.
--- ※ participant_id는 역추적 가능성 때문에 앱 연동 시 저장하지 않는 방향으로 정리 예정
+-- 현업적용도 설문: 익명 원칙. 이름·참여자 연결 식별자 없음.
 create table if not exists surveys (
   id text primary key,
   course_code text references courses(code) on delete cascade,
-  participant_id text,
   class_id text,
   class_name text,
   likert jsonb default '[]'::jsonb,
@@ -70,6 +68,9 @@ create table if not exists surveys (
   support text,
   submitted_at timestamptz default now()
 );
+
+-- 기존 초기 스키마에 남아 있던 연결 식별자 열을 제거한다.
+alter table public.surveys drop column if exists participant_id;
 
 create table if not exists missions (
   id text primary key,
@@ -110,34 +111,70 @@ drop policy if exists "demo_all_goals" on goals;
 drop policy if exists "demo_all_surveys" on surveys;
 drop policy if exists "demo_all_missions" on missions;
 
-create policy "demo_select_courses" on courses for select using (true);
-create policy "demo_insert_courses" on courses for insert with check (true);
-create policy "demo_update_courses" on courses for update using (true) with check (true);
+drop policy if exists "demo_select_courses" on courses;
+drop policy if exists "demo_insert_courses" on courses;
+drop policy if exists "demo_update_courses" on courses;
+drop policy if exists "demo_select_rounds" on rounds;
+drop policy if exists "demo_insert_rounds" on rounds;
+drop policy if exists "demo_update_rounds" on rounds;
+drop policy if exists "demo_select_items" on round_items;
+drop policy if exists "demo_insert_items" on round_items;
+drop policy if exists "demo_update_items" on round_items;
+drop policy if exists "demo_select_goals" on goals;
+drop policy if exists "demo_insert_goals" on goals;
+drop policy if exists "demo_select_surveys" on surveys;
+drop policy if exists "demo_insert_surveys" on surveys;
+drop policy if exists "demo_select_missions" on missions;
+drop policy if exists "demo_insert_missions" on missions;
+drop policy if exists "demo_update_missions" on missions;
 
-create policy "demo_select_rounds" on rounds for select using (true);
-create policy "demo_insert_rounds" on rounds for insert with check (true);
-create policy "demo_update_rounds" on rounds for update using (true) with check (true);
+create policy "demo_select_courses" on courses for select to anon, authenticated using (true);
+create policy "demo_insert_courses" on courses for insert to anon, authenticated with check (true);
+create policy "demo_update_courses" on courses for update to anon, authenticated using (true) with check (true);
 
-create policy "demo_select_items" on round_items for select using (true);
-create policy "demo_insert_items" on round_items for insert with check (true);
-create policy "demo_update_items" on round_items for update using (true) with check (true);
+create policy "demo_select_rounds" on rounds for select to anon, authenticated using (true);
+create policy "demo_insert_rounds" on rounds for insert to anon, authenticated with check (true);
+create policy "demo_update_rounds" on rounds for update to anon, authenticated using (true) with check (true);
 
-create policy "demo_select_goals" on goals for select using (true);
-create policy "demo_insert_goals" on goals for insert with check (true);
+create policy "demo_select_items" on round_items for select to anon, authenticated using (true);
+create policy "demo_insert_items" on round_items for insert to anon, authenticated with check (true);
+create policy "demo_update_items" on round_items for update to anon, authenticated using (true) with check (true);
 
-create policy "demo_select_surveys" on surveys for select using (true);
-create policy "demo_insert_surveys" on surveys for insert with check (true);
+create policy "demo_select_goals" on goals for select to anon, authenticated using (true);
+create policy "demo_insert_goals" on goals for insert to anon, authenticated with check (true);
 
-create policy "demo_select_missions" on missions for select using (true);
-create policy "demo_insert_missions" on missions for insert with check (true);
-create policy "demo_update_missions" on missions for update using (true) with check (true);
+create policy "demo_select_surveys" on surveys for select to anon, authenticated using (true);
+create policy "demo_insert_surveys" on surveys for insert to anon, authenticated with check (true);
+
+create policy "demo_select_missions" on missions for select to anon, authenticated using (true);
+create policy "demo_insert_missions" on missions for insert to anon, authenticated with check (true);
+create policy "demo_update_missions" on missions for update to anon, authenticated using (true) with check (true);
 
 -- ---------- 5. 실시간(Realtime) 등록 ----------
--- 이미 등록된 경우 "already member of publication" 오류가 나며, 무시해도 된다.
+-- 이미 등록된 테이블은 건너뛰어 전체 스키마를 다시 실행해도 중단되지 않는다.
 
-alter publication supabase_realtime add table courses;
-alter publication supabase_realtime add table rounds;
-alter publication supabase_realtime add table round_items;
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'courses'
+  ) then
+    alter publication supabase_realtime add table public.courses;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'rounds'
+  ) then
+    alter publication supabase_realtime add table public.rounds;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'round_items'
+  ) then
+    alter publication supabase_realtime add table public.round_items;
+  end if;
+end
+$$;
 
 
 -- 1) 과정 숨김 처리

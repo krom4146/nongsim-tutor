@@ -20,6 +20,12 @@ import { seedDemoCourse } from "./services/demoCourseSeed";
 import { DATA_MODE } from "./services/supabaseClient";
 import { subscribeCourse } from "./services/realtimeBridge";
 import { putImage } from "./services/fileStore";
+import {
+  anonymizeCsvRows,
+  anonymizeSurveyResponses,
+  createReportCsvContent,
+  isExpectedExportCourse,
+} from "./services/reportExportService";
 
 /* 단일 파일 구조 유지: 기존 내부 모듈 함수와 mock 데이터를 main.jsx 안에 포함합니다. */
 
@@ -666,23 +672,9 @@ function createFollowupQuestions(scenario, difficulty) {
   return difficulty === "쉬움" ? questions.slice(0, 1) : questions;
 }
 
-/* ---- inlined from src\services\reportService.js ---- */
-function anonymizeSurveyResponses(surveys = []) {
-  return (surveys || []).map((survey, index) => ({
-    label: `응답자 ${index + 1}`,
-    classId: survey.classId || DEFAULT_CLASS_ID,
-    className: survey.className || DEFAULT_CLASS_NAME,
-    likert: survey.likert || [],
-    barriers: survey.barriers || [],
-    applied: survey.applied || "",
-    support: survey.support || "",
-    submittedAt: survey.submittedAt || survey.createdAt || "",
-  }));
-}
-
 function reportData(course, classId = "all") {
   const filtered = filterCourseByClass(course, classId);
-  const anonymousSurveys = anonymizeSurveyResponses(filtered.surveys);
+  const anonymousSurveys = anonymizeSurveyResponses(filtered.surveys, transferQuestions);
   const classSummaries = (course.classes || []).map((classInfo) => {
     const classCourse = filterCourseByClass(course, classInfo.id);
     return {
@@ -708,6 +700,7 @@ function reportData(course, classId = "all") {
     transferAfterTwoMonths: {
       submitted: filtered.surveys.length,
       averageLikert: averageLikert(filtered.surveys),
+      questions: transferQuestions.map((question, index) => ({ number: index + 1, question })),
       responses: anonymousSurveys,
       missions: filtered.missions,
       missionCheckpoints: filtered.missions.flatMap((mission) => mission.missionCheckpoints || []),
@@ -752,18 +745,10 @@ function anonymizeReportExport(report) {
   };
 }
 
-function anonymizeCsvRows(items = []) {
-  return items.map((item, index) => ({
-    courseId: item.courseId,
-    classId: item.classId || DEFAULT_CLASS_ID,
-    className: item.className || DEFAULT_CLASS_NAME,
-    studentName: `응답자 ${index + 1}`,
-    responseType: item.responseType,
-    createdAt: item.createdAt || item.submittedAt || "",
-  }));
-}
-
-function downloadReport(course, format, classId = "all") {
+function downloadReport(course, format, classId = "all", expectedCourseCode = course?.code) {
+  if (!isExpectedExportCourse(course, expectedCourseCode)) {
+    throw new Error("Export course mismatch.");
+  }
   const filtered = filterCourseByClass(course, classId);
   const report = reportData(course, classId);
   let content;
@@ -782,19 +767,8 @@ function downloadReport(course, format, classId = "all") {
       ...filtered.jobReflections.map((item) => ({ ...item, courseId: course.code, responseType: "jobReflection" })),
       ...filtered.reportTrainings.map((item) => ({ ...item, courseId: course.code, responseType: "reportTraining" })),
       ...filtered.rounds.flatMap((round) => round.items.map((item) => ({ ...item, courseId: course.code, responseType: round.kind }))),
-    ]);
-    const rows = [
-      ["courseId", "classId", "className", "studentName", "responseType", "createdAt"],
-      ...responseRows.map((item) => [
-        item.courseId,
-        item.classId || "class-1",
-        item.className || "1반",
-        item.studentName || "",
-        item.responseType,
-        item.createdAt || "",
-      ]),
-    ];
-    content = "\uFEFF" + rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
+    ], transferQuestions);
+    content = createReportCsvContent(responseRows, transferQuestions);
     type = "text/csv;charset=utf-8";
     ext = "csv";
   }
@@ -2690,6 +2664,8 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
   const roundPendingRef = useRef(false);
   const pendingReactionsRef = useRef(new Set());
   const reportExportPendingRef = useRef(false);
+  const exportCourseCodeRef = useRef(course.code);
+  exportCourseCodeRef.current = course.code;
   const [newCourse, setNewCourse] = useState({
     type: "ideology",
     name: "",
@@ -2925,17 +2901,27 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
 
   const exportReport = async (format, classFilter) => {
     if (reportExportPendingRef.current) return;
+    const requestedCourseCode = course.code;
     reportExportPendingRef.current = true;
     setReportRefreshStatus("loading");
     try {
-      const result = await onReloadCourse(course.code);
+      const result = await onReloadCourse(requestedCourseCode);
       if (!result.ok) {
         setReportRefreshStatus("error");
         notify("최신 전이 데이터를 불러오지 못해 파일을 내보내지 않았습니다.");
         return;
       }
+      if (!isExpectedExportCourse(result.course, requestedCourseCode) || exportCourseCodeRef.current !== requestedCourseCode) {
+        setReportRefreshStatus("error");
+        notify("현재 보고 있는 과정이 변경되어 파일을 내보내지 않았습니다. 다시 시도해 주세요.");
+        return;
+      }
       setReportRefreshStatus("ready");
-      downloadReport(result.course, format, classFilter);
+      downloadReport(result.course, format, classFilter, requestedCourseCode);
+    } catch (error) {
+      console.error("성과 리포트 내보내기에 실패했습니다.", error);
+      setReportRefreshStatus("error");
+      notify("성과 리포트를 만들지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
     } finally {
       reportExportPendingRef.current = false;
     }
@@ -3101,7 +3087,7 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
             </>}
             <FollowupPushDemo status={pushStatus} onStart={startPushDemo} onOpen={openFollowupSurveyDemo} />
             <div className="export-row">
-              <div><h3>과정 성과 리포트</h3><p>목표·참여·성찰·현업 적용 데이터를 한 번에 내보냅니다.</p></div>
+              <div><h3>과정 성과 리포트</h3><p>현재 과정 {course.code}의 최신 목표·참여·성찰·현업 적용 데이터를 한 번에 내보냅니다.</p></div>
               <div><button disabled={reportRefreshStatus !== "ready"} className="secondary" onClick={() => exportReport("json", "all")}>전체 JSON</button><button disabled={reportRefreshStatus !== "ready"} className="secondary" onClick={() => exportReport("csv", "all")}>전체 CSV</button><button disabled={reportRefreshStatus !== "ready"} className="secondary" onClick={() => exportReport("json", selectedClassFilter)}>{selectedClass.name} JSON</button><button disabled={reportRefreshStatus !== "ready"} className="primary" onClick={() => exportReport("csv", selectedClassFilter)}>{selectedClass.name} CSV</button></div>
             </div>
           </section>
@@ -3199,7 +3185,7 @@ function FollowupPushDemo({ status, onStart, onOpen }) {
 function TransferReportSummary({ course, participantCount }) {
   const surveys = course.surveys || [];
   const achievements = course.achievements || [];
-  const anonymousSurveys = anonymizeSurveyResponses(surveys);
+  const anonymousSurveys = anonymizeSurveyResponses(surveys, transferQuestions);
   const appliedTexts = anonymousSurveys.filter((item) => item.applied).slice(0, 3);
   const supportTexts = anonymousSurveys.filter((item) => item.support).slice(0, 3);
   const barrierCounts = surveys.reduce((acc, survey) => {
