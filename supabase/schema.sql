@@ -3,7 +3,7 @@
 -- 이 파일은 현재 DB 구조의 원본 기록입니다.
 -- 프로젝트를 새로 만들 경우 이 파일 전체를 SQL Editor에 붙여넣어 실행하면
 -- 동일한 구조가 복원됩니다.
--- 최종 수정: 2026-08-13
+-- 최종 수정: 2026-08-15
 -- =====================================================================
 
 -- ---------- 1. 테이블 ----------
@@ -241,3 +241,40 @@ drop trigger if exists trg_courses_touch on public.courses;
 create trigger trg_courses_touch
 before update on public.courses
 for each row execute function public.touch_updated_at();
+
+-- 5) 장표 이미지 공개 버킷과 신규 업로드 전용 정책
+insert into storage.buckets (
+  id,
+  name,
+  public,
+  file_size_limit,
+  allowed_mime_types
+)
+values (
+  'board-images',
+  'board-images',
+  true,
+  5242880,
+  array['image/jpeg']
+)
+on conflict (id) do update
+set public = excluded.public,
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
+
+-- Public URL 조회는 공개 버킷 자체로 허용하고 목록 SELECT 정책은 만들지 않는다.
+drop policy if exists "board_images_read" on storage.objects;
+drop policy if exists "board_images_insert" on storage.objects;
+
+create policy "board_images_insert"
+on storage.objects
+for insert
+to anon, authenticated
+with check (
+  bucket_id = 'board-images'
+  and lower(storage.extension(name)) = 'jpg'
+  and array_length(storage.foldername(name), 1) = 2
+  and (storage.foldername(name))[1] ~ '^NH-[0-9]+$'
+);
+
+-- UPDATE·DELETE 정책은 의도적으로 만들지 않는다. 업로드는 새 UUID 경로만 사용한다.

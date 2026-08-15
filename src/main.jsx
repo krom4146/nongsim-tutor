@@ -2599,8 +2599,12 @@ function StudentBoardArea({ rounds, course, onSaveRoundItem, student, notify }) 
     uploadingRoundsRef.current.add(round.id);
     setUploadingRounds((current) => new Set(current).add(round.id));
     try {
-      const imageResult = await putImage(file, { maxSize: 1280, quality: 0.8, courseId: round.courseId, roundId: round.id });
-      if (!imageResult.ok) throw new Error(imageResult.error);
+      const imageResult = await putImage(file, { maxSize: 1280, quality: 0.8, courseId: course.code, roundId: round.id });
+      if (!imageResult.ok) {
+        console.error("장표 이미지 업로드 실패", { errorCode: imageResult.errorCode, error: imageResult.error });
+        notify(imageResult.userMessage || "이미지를 업로드하지 못했습니다. 다시 시도해 주세요.");
+        return;
+      }
       const result = await onSaveRoundItem(course, round, {
         id: crypto.randomUUID(),
         participantId,
@@ -2613,13 +2617,21 @@ function StudentBoardArea({ rounds, course, onSaveRoundItem, student, notify }) 
         createdAt: now(),
       });
       if (!result.ok) {
+        if (imageResult.path) {
+          console.warn("orphan candidate", {
+            bucket: "board-images",
+            path: imageResult.path,
+            courseCode: course.code,
+            roundId: round.id,
+          });
+        }
         notify("장표가 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
         return;
       }
       notify(`${round.prompt}에 ${team} 장표를 업로드했습니다.`);
     } catch (error) {
       console.error("장표 제출에 실패했습니다.", error);
-      notify("이미지 저장 중 문제가 발생했습니다. 사진 크기를 줄이거나 다시 선택해주세요.");
+      notify("예상하지 못한 오류로 장표를 등록하지 못했습니다. 다시 시도해 주세요.");
     } finally {
       uploadingRoundsRef.current.delete(round.id);
       setUploadingRounds((current) => {
@@ -2645,6 +2657,7 @@ function StudentBoardArea({ rounds, course, onSaveRoundItem, student, notify }) 
               {!mine ? <>
                 <input disabled={isUploading} value={teamNames[round.id] || ""} onChange={(e) => setTeamNames({ ...teamNames, [round.id]: e.target.value })} placeholder="팀명" />
                 <label className={`secondary board-file-button${isUploading ? " is-disabled" : ""}`}>{isUploading ? "저장 중…" : "장표 사진 선택"}<input disabled={isUploading} type="file" accept="image/*" onChange={(e) => { const input = e.currentTarget; void upload(round, input.files?.[0]).finally(() => { input.value = ""; }); }} /></label>
+                <small className="theory-caption">공개 URL로 표시됩니다. 얼굴·실명·연락처 등 개인정보가 포함된 사진은 선택하지 마세요.</small>
               </> : (mine.url || mine.imageUrl) && <img src={mine.url || mine.imageUrl} alt={`${mine.by} 장표`} />}
             </article>
           );
