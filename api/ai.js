@@ -9,22 +9,15 @@ import {
   saveAnalysis,
 } from "../server/ai/aiPersistence.js";
 import {
-  buildGoalCohortOpenAiRequest,
-  GOAL_COHORT_PROMPT_VERSION,
-} from "../server/ai/prompts.js";
-import {
-  goalCohortOutputSchema,
-  normalizeGoalCohortRequest,
-  projectGoalCohortResult,
-} from "../server/ai/schemas.js";
-import {
   hasJsonContentType,
   isAllowedOrigin,
   readJsonBody,
   RequestSecurityError,
 } from "../server/ai/security.js";
+import { getAiTaskDefinition } from "../server/ai/taskRegistry.js";
 
 const ALLOWED_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh"]);
+const ALLOWED_IMAGE_DETAILS = new Set(["low", "high", "original", "auto"]);
 const SAFE_ERROR_MESSAGES = {
   METHOD_NOT_ALLOWED: "POST 요청만 지원합니다.",
   UNSUPPORTED_MEDIA_TYPE: "Content-Type은 application/json이어야 합니다.",
@@ -32,7 +25,7 @@ const SAFE_ERROR_MESSAGES = {
   PAYLOAD_TOO_LARGE: "요청 데이터가 허용 크기를 초과했습니다.",
   INVALID_PAYLOAD: "요청 데이터가 올바르지 않습니다.",
   COURSE_NOT_FOUND: "활성 과정을 찾을 수 없습니다.",
-  INSUFFICIENT_DATA: "분석할 목표 응답이 부족합니다.",
+  INSUFFICIENT_DATA: "분석할 입력 데이터가 부족합니다.",
   RATE_LIMITED: "AI 요청이 많습니다. 잠시 후 다시 시도해 주세요.",
   QUOTA_EXCEEDED: "AI 사용 한도에 도달했습니다. 관리자에게 문의해 주세요.",
   MODEL_REFUSAL: "요청 내용을 안전하게 분석할 수 없습니다.",
@@ -67,11 +60,15 @@ function getServerConfig() {
   const apiKey = process.env.OPENAI_API_KEY;
   const model = String(process.env.OPENAI_MODEL || "").trim();
   const reasoningEffort = String(process.env.OPENAI_REASONING_EFFORT || "").trim().toLowerCase() || null;
+  const imageDetail = String(process.env.OPENAI_IMAGE_DETAIL || "").trim().toLowerCase() || null;
   if (!apiKey || !model) throw new SafeHttpError("SERVER_MISCONFIGURED", 500);
   if (reasoningEffort && !ALLOWED_REASONING_EFFORTS.has(reasoningEffort)) {
     throw new SafeHttpError("SERVER_MISCONFIGURED", 500);
   }
-  return { apiKey, model, reasoningEffort };
+  if (imageDetail && !ALLOWED_IMAGE_DETAILS.has(imageDetail)) {
+    throw new SafeHttpError("SERVER_MISCONFIGURED", 500);
+  }
+  return { apiKey, model, reasoningEffort, imageDetail };
 }
 
 function findRefusal(response) {
@@ -96,7 +93,7 @@ function mapOpenAiError(error) {
   return new SafeHttpError("UPSTREAM_ERROR", 502);
 }
 
-function successBody({ data, source, persisted, model, requestId, warning }) {
+function successBody({ data, source, persisted, model, promptVersion, requestId, warning }) {
   return {
     ok: true,
     data,
@@ -105,7 +102,7 @@ function successBody({ data, source, persisted, model, requestId, warning }) {
       source,
       persisted,
       model,
-      promptVersion: GOAL_COHORT_PROMPT_VERSION,
+      promptVersion,
       requestId,
     },
     ...(warning ? { warning } : {}),
@@ -117,6 +114,7 @@ export async function handleAiRequest(req, res, dependencies = {}) {
   const requestId = randomUUID();
   let task = null;
   let model = null;
+  let promptVersion = null;
 
   try {
     if (req.method !== "POST") {
@@ -127,20 +125,31 @@ export async function handleAiRequest(req, res, dependencies = {}) {
 
     const body = await readJsonBody(req);
     if (!isAllowedOrigin(req)) throw new SafeHttpError("INVALID_PAYLOAD", 403);
-    if (body?.task !== "goalCohort") throw new SafeHttpError("INVALID_TASK", 400);
-    if (Array.isArray(body?.payload?.goals) && body.payload.goals.length === 0) {
+    const taskDefinition = getAiTaskDefinition(body?.task);
+    if (!taskDefinition) throw new SafeHttpError("INVALID_TASK", 400);
+    task = taskDefinition.task;
+    promptVersion = taskDefinition.promptVersion;
+    if (taskDefinition.isExplicitlyEmpty(body?.payload)) {
       throw new SafeHttpError("INSUFFICIENT_DATA", 422);
     }
 
     let normalized;
     try {
-      normalized = normalizeGoalCohortRequest(body);
+      normalized = taskDefinition.normalizeRequest(body);
     } catch (error) {
       if (error instanceof ZodError) throw new SafeHttpError("INVALID_PAYLOAD", 422);
+      if (error?.message === "SUPABASE_SERVER_CONFIG_MISSING") {
+        throw new SafeHttpError("SERVER_MISCONFIGURED", 500);
+      }
+      if (error?.message === "INVALID_BOARD_IMAGE_URL") {
+        throw new SafeHttpError("INVALID_PAYLOAD", 422);
+      }
       throw error;
     }
     task = normalized.task;
-    if (!normalized.payload.goals.length) throw new SafeHttpError("INSUFFICIENT_DATA", 422);
+    if (!taskDefinition.hasSufficientData(normalized.payload)) {
+      throw new SafeHttpError("INSUFFICIENT_DATA", 422);
+    }
 
     const config = getServerConfig();
     model = config.model;
@@ -164,7 +173,7 @@ export async function handleAiRequest(req, res, dependencies = {}) {
       courseCode: normalized.courseCode,
       task,
       inputHash,
-      promptVersion: GOAL_COHORT_PROMPT_VERSION,
+      promptVersion,
       model,
     };
 
@@ -175,22 +184,29 @@ export async function handleAiRequest(req, res, dependencies = {}) {
       throw new SafeHttpError("UPSTREAM_ERROR", 502);
     }
     if (cached) {
-      const parsedCache = goalCohortOutputSchema.safeParse(cached.result);
+      const parsedCache = taskDefinition.outputSchema.safeParse(cached.result);
       if (parsedCache.success) {
         try {
-          const data = projectGoalCohortResult(parsedCache.data, normalized.payload.goals, cached.created_at);
+          const data = taskDefinition.projectResult(parsedCache.data, normalized.payload, cached.created_at);
           safeLog("info", {
             requestId,
             openAiRequestId: cached.openai_request_id || null,
             task,
             model,
-            promptVersion: GOAL_COHORT_PROMPT_VERSION,
+            promptVersion,
             source: "cache",
             inputTokens: cached.input_tokens ?? null,
             outputTokens: cached.output_tokens ?? null,
             durationMs: Date.now() - startedAt,
           });
-          return jsonResponse(res, 200, successBody({ data, source: "cache", persisted: true, model, requestId }));
+          return jsonResponse(res, 200, successBody({
+            data,
+            source: "cache",
+            persisted: true,
+            model,
+            promptVersion,
+            requestId,
+          }));
         } catch {
           cached = null;
         }
@@ -202,9 +218,10 @@ export async function handleAiRequest(req, res, dependencies = {}) {
     const openAiAbortController = new AbortController();
     const openAiTimeoutId = setTimeout(() => openAiAbortController.abort(), 25_000);
     try {
-      response = await openai.responses.parse(buildGoalCohortOpenAiRequest({
+      response = await openai.responses.parse(taskDefinition.buildOpenAiRequest({
         model,
         reasoningEffort: config.reasoningEffort,
+        imageDetail: task === "boardAnalysis" ? config.imageDetail : null,
         courseCode: normalized.courseCode,
         payload: normalized.payload,
       }), { signal: openAiAbortController.signal });
@@ -218,12 +235,13 @@ export async function handleAiRequest(req, res, dependencies = {}) {
     if (response.status === "incomplete") throw new SafeHttpError("INCOMPLETE_OUTPUT", 502);
     if (!response.output_parsed) throw new SafeHttpError("INCOMPLETE_OUTPUT", 502);
 
-    const parsedOutput = goalCohortOutputSchema.safeParse(response.output_parsed);
+    const parsedOutput = taskDefinition.outputSchema.safeParse(response.output_parsed);
     if (!parsedOutput.success) throw new SafeHttpError("INCOMPLETE_OUTPUT", 502);
 
     let data;
     try {
-      data = projectGoalCohortResult(parsedOutput.data, normalized.payload.goals);
+      taskDefinition.validateEvidence(parsedOutput.data, normalized.payload);
+      data = taskDefinition.projectResult(parsedOutput.data, normalized.payload);
     } catch {
       throw new SafeHttpError("INCOMPLETE_OUTPUT", 502);
     }
@@ -247,10 +265,15 @@ export async function handleAiRequest(req, res, dependencies = {}) {
       if (saved.ok && saved.createdAt) data.generatedAt = saved.createdAt;
       if (saved.duplicate) {
         const racedCache = await (dependencies.findCachedAnalysis || findCachedAnalysis)(supabase, cacheKey);
-        const parsedRacedCache = goalCohortOutputSchema.safeParse(racedCache?.result);
+        const parsedRacedCache = taskDefinition.outputSchema.safeParse(racedCache?.result);
         if (parsedRacedCache.success) {
-          data = projectGoalCohortResult(parsedRacedCache.data, normalized.payload.goals, racedCache.created_at);
-          persisted = true;
+          try {
+            taskDefinition.validateEvidence(parsedRacedCache.data, normalized.payload);
+            data = taskDefinition.projectResult(parsedRacedCache.data, normalized.payload, racedCache.created_at);
+            persisted = true;
+          } catch {
+            persisted = false;
+          }
         }
       }
     } catch {
@@ -269,14 +292,22 @@ export async function handleAiRequest(req, res, dependencies = {}) {
       openAiRequestId,
       task,
       model,
-      promptVersion: GOAL_COHORT_PROMPT_VERSION,
+      promptVersion,
       source: "live",
       persisted,
       inputTokens,
       outputTokens,
       durationMs: Date.now() - startedAt,
     });
-    return jsonResponse(res, 200, successBody({ data, source: "live", persisted, model, requestId, warning }));
+    return jsonResponse(res, 200, successBody({
+      data,
+      source: "live",
+      persisted,
+      model,
+      promptVersion,
+      requestId,
+      warning,
+    }));
   } catch (error) {
     const safeError = error instanceof SafeHttpError
       ? error
@@ -287,7 +318,7 @@ export async function handleAiRequest(req, res, dependencies = {}) {
       requestId,
       task,
       model,
-      promptVersion: task === "goalCohort" ? GOAL_COHORT_PROMPT_VERSION : null,
+      promptVersion,
       errorCode: safeError.code,
       durationMs: Date.now() - startedAt,
     });

@@ -135,3 +135,498 @@ export function projectGoalCohortResult(result, goals, generatedAt = new Date().
     generatedAt,
   };
 }
+
+const MAX_SOURCE_COUNT = 200;
+const MAX_SOURCE_TEXT_LENGTH = 2_000;
+const MAX_TOTAL_TEXT_LENGTH = 20_000;
+const MAX_SHORT_TEXT_LENGTH = 200;
+const MAX_REPORT_TURNS = 20;
+
+const courseCodeSchema = z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$/);
+const taskSourceIdSchema = z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/);
+const taskSourceSchema = z.object({
+  sourceId: taskSourceIdSchema,
+  text: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH),
+}).strict();
+const taskSourceIdsSchema = z.array(taskSourceIdSchema).min(1).max(MAX_SOURCE_COUNT);
+
+function addUniqueSourceIssues(items, context, pathPrefix) {
+  const sourceIds = new Set();
+  items.forEach((item, index) => {
+    if (sourceIds.has(item.sourceId)) {
+      context.addIssue({
+        code: "custom",
+        message: "sourceId must be unique.",
+        path: [pathPrefix, index, "sourceId"],
+      });
+    }
+    sourceIds.add(item.sourceId);
+  });
+}
+
+function addTotalTextIssue(items, context, path) {
+  const totalLength = items.reduce((sum, item) => sum + item.text.length, 0);
+  if (totalLength > MAX_TOTAL_TEXT_LENGTH) {
+    context.addIssue({ code: "custom", message: "Total text is too long.", path: [path] });
+  }
+}
+
+function normalizeSource(source) {
+  return {
+    sourceId: source.sourceId,
+    text: redactPersonalData(normalizeWhitespace(source.text)),
+  };
+}
+
+function assertKnownSourceIds(sourceIds, allowedSourceIds) {
+  if (sourceIds.some((sourceId) => !allowedSourceIds.has(sourceId))) {
+    throw new Error("UNGROUNDED_SOURCE_ID");
+  }
+}
+
+function uniqueSourceIds(values) {
+  return [...new Set(values)];
+}
+
+function withGeneratedAt(result, generatedAt = new Date().toISOString()) {
+  return { ...result, generatedAt };
+}
+
+const pollRoundSchema = z.object({
+  sourceId: taskSourceIdSchema,
+  prompt: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH),
+  questionType: z.enum(["subjective", "objective"]),
+  questionIntent: z.enum(["general", "understanding", "misconception", "application", "dilemma", "emotion"]),
+  anonymous: z.boolean(),
+}).strict();
+
+const pollResponseSchema = taskSourceSchema.extend({
+  agree: z.number().int().min(0).max(1_000_000),
+}).strict();
+
+export const pollClusterPayloadSchema = z.object({
+  round: pollRoundSchema,
+  responses: z.array(pollResponseSchema).min(1).max(MAX_SOURCE_COUNT),
+}).strict().superRefine((payload, context) => {
+  addUniqueSourceIssues([payload.round, ...payload.responses], context, "responses");
+  addTotalTextIssue([
+    { text: payload.round.prompt },
+    ...payload.responses,
+  ], context, "responses");
+});
+
+export const pollClusterRequestSchema = z.object({
+  task: z.literal("pollCluster"),
+  courseCode: courseCodeSchema,
+  payload: pollClusterPayloadSchema,
+}).strict();
+
+const clusterOutputSchema = z.object({
+  title: z.string().min(1).max(120),
+  count: z.number().int().nonnegative(),
+  insight: z.string().min(1).max(1_000),
+  sourceIds: taskSourceIdsSchema,
+}).strict();
+
+export const pollClusterOutputSchema = z.object({
+  summary: z.string().min(1).max(2_000),
+  summarySourceIds: taskSourceIdsSchema,
+  clusters: z.array(clusterOutputSchema).min(1).max(6),
+  recommendedActions: z.array(z.string().min(1).max(500)).min(1).max(5),
+  followupQuestions: z.array(z.string().min(1).max(500)).min(1).max(4),
+  teachingIntervention: z.object({
+    insufficientConcept: z.string().min(1).max(500),
+    confusionPoint: z.string().min(1).max(500),
+    immediateQuestion: z.string().min(1).max(500),
+    miniLesson: z.string().min(1).max(1_000),
+    discussionTopic: z.string().min(1).max(500),
+    evidenceSourceIds: taskSourceIdsSchema,
+  }).strict(),
+  sampleSize: z.number().int().nonnegative(),
+  dataWarning: z.string().max(500).nullable(),
+}).strict();
+
+export function normalizePollClusterRequest(value) {
+  const parsed = pollClusterRequestSchema.parse(value);
+  return {
+    task: parsed.task,
+    courseCode: parsed.courseCode.toUpperCase(),
+    payload: {
+      round: {
+        ...parsed.payload.round,
+        prompt: redactPersonalData(normalizeWhitespace(parsed.payload.round.prompt)),
+      },
+      responses: parsed.payload.responses.map((response) => ({
+        ...normalizeSource(response),
+        agree: response.agree,
+      })),
+    },
+  };
+}
+
+export function validatePollClusterSources(result, payload) {
+  const allowedSourceIds = new Set(payload.responses.map((response) => response.sourceId));
+  const referencedSourceIds = [
+    ...result.summarySourceIds,
+    ...result.clusters.flatMap((cluster) => cluster.sourceIds),
+    ...result.teachingIntervention.evidenceSourceIds,
+  ];
+  assertKnownSourceIds(referencedSourceIds, allowedSourceIds);
+  if (result.sampleSize !== payload.responses.length) throw new Error("INVALID_SAMPLE_SIZE");
+  if (result.clusters.some((cluster) => cluster.count !== new Set(cluster.sourceIds).size)) {
+    throw new Error("INVALID_CLUSTER_COUNT");
+  }
+}
+
+export function projectPollClusterResult(result, payload, generatedAt = new Date().toISOString()) {
+  validatePollClusterSources(result, payload);
+  const sourceById = new Map(payload.responses.map((response, index) => [response.sourceId, {
+    source: "poll",
+    by: payload.round.anonymous ? "익명" : `응답자 ${index + 1}`,
+    quote: response.text,
+  }]));
+  const evidenceSourceIds = uniqueSourceIds([
+    ...result.summarySourceIds,
+    ...result.clusters.flatMap((cluster) => cluster.sourceIds),
+    ...result.teachingIntervention.evidenceSourceIds,
+  ]).slice(0, EVIDENCE_LIMIT);
+  const interventionEvidence = uniqueSourceIds(result.teachingIntervention.evidenceSourceIds)
+    .map((sourceId) => sourceById.get(sourceId)?.quote)
+    .filter(Boolean)
+    .join(" / ");
+  const dataWarning = payload.responses.length < 3 && !result.dataWarning
+    ? "표본이 적어 공통 경향으로 일반화하기 어렵습니다."
+    : result.dataWarning;
+
+  return {
+    ...result,
+    dataWarning,
+    teachingIntervention: {
+      ...result.teachingIntervention,
+      evidence: interventionEvidence,
+    },
+    evidence: evidenceSourceIds.map((sourceId) => sourceById.get(sourceId)),
+    evidenceCount: evidenceSourceIds.length,
+    generatedAt,
+  };
+}
+
+export const boardAnalysisPayloadSchema = z.object({
+  classId: optionalScopeText,
+  className: optionalScopeText,
+  moduleTitle: z.string().trim().min(1).max(MAX_SHORT_TEXT_LENGTH),
+  scopeLabel: z.string().trim().min(1).max(MAX_SHORT_TEXT_LENGTH),
+  imageUrl: z.string().trim().url().max(2_048),
+}).strict();
+
+export const boardAnalysisRequestSchema = z.object({
+  task: z.literal("boardAnalysis"),
+  courseCode: courseCodeSchema,
+  payload: boardAnalysisPayloadSchema,
+}).strict();
+
+export const boardAnalysisOutputSchema = z.object({
+  status: z.enum(["ok", "unreadable"]),
+  scope: z.string().min(1).max(300),
+  summary: z.string().min(1).max(2_000),
+  common: z.array(z.string().min(1).max(300)).max(6),
+  action: z.string().min(1).max(1_000),
+}).strict();
+
+export function assertAllowedBoardImageUrl(value, configuredSupabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL) {
+  let supabaseUrl;
+  try {
+    supabaseUrl = new URL(configuredSupabaseUrl);
+  } catch {
+    throw new Error("SUPABASE_SERVER_CONFIG_MISSING");
+  }
+  let imageUrl;
+  try {
+    imageUrl = new URL(value);
+  } catch {
+    throw new Error("INVALID_BOARD_IMAGE_URL");
+  }
+
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(imageUrl.pathname);
+  } catch {
+    throw new Error("INVALID_BOARD_IMAGE_URL");
+  }
+  const allowedPrefix = "/storage/v1/object/public/board-images/";
+  if (imageUrl.protocol !== "https:"
+    || imageUrl.origin !== supabaseUrl.origin
+    || imageUrl.username
+    || imageUrl.password
+    || imageUrl.search
+    || imageUrl.hash
+    || !decodedPath.startsWith(allowedPrefix)
+    || decodedPath.length <= allowedPrefix.length
+    || decodedPath.includes("..")) {
+    throw new Error("INVALID_BOARD_IMAGE_URL");
+  }
+  return imageUrl.toString();
+}
+
+export function normalizeBoardAnalysisRequest(value) {
+  const parsed = boardAnalysisRequestSchema.parse(value);
+  return {
+    task: parsed.task,
+    courseCode: parsed.courseCode.toUpperCase(),
+    payload: {
+      classId: parsed.payload.classId ? normalizeWhitespace(parsed.payload.classId) : null,
+      className: parsed.payload.className ? normalizeWhitespace(parsed.payload.className) : null,
+      moduleTitle: redactPersonalData(normalizeWhitespace(parsed.payload.moduleTitle)),
+      scopeLabel: redactPersonalData(normalizeWhitespace(parsed.payload.scopeLabel)),
+      imageUrl: assertAllowedBoardImageUrl(parsed.payload.imageUrl),
+    },
+  };
+}
+
+export function projectBoardAnalysisResult(result, _payload, generatedAt) {
+  return withGeneratedAt(result, generatedAt);
+}
+
+const surveySchema = z.object({
+  sourceId: taskSourceIdSchema,
+  likert: z.array(z.number().int().min(1).max(5)).length(5),
+  barriers: z.array(z.string().trim().min(1).max(100)).max(10),
+  applied: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH),
+  support: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH),
+}).strict();
+
+export const transferReportPayloadSchema = z.object({
+  classId: optionalScopeText,
+  className: optionalScopeText,
+  participantCount: z.number().int().nonnegative().max(100_000),
+  surveys: z.array(surveySchema).min(1).max(MAX_SOURCE_COUNT),
+}).strict().superRefine((payload, context) => {
+  addUniqueSourceIssues(payload.surveys, context, "surveys");
+  addTotalTextIssue(payload.surveys.map((survey) => ({
+    text: `${survey.applied} ${survey.support} ${survey.barriers.join(" ")}`,
+  })), context, "surveys");
+  if (payload.participantCount < payload.surveys.length) {
+    context.addIssue({
+      code: "custom",
+      message: "participantCount cannot be smaller than survey count.",
+      path: ["participantCount"],
+    });
+  }
+});
+
+export const transferReportRequestSchema = z.object({
+  task: z.literal("transferReport"),
+  courseCode: courseCodeSchema,
+  payload: transferReportPayloadSchema,
+}).strict();
+
+const surveyCaseSchema = z.object({
+  sourceIds: z.array(taskSourceIdSchema).min(1).max(MAX_SOURCE_COUNT),
+}).strict();
+
+export const transferReportOutputSchema = z.object({
+  summary: z.string().min(1).max(2_000),
+  successCase: surveyCaseSchema,
+  blockedCase: surveyCaseSchema,
+  appliedHighlights: z.array(surveyCaseSchema).max(5),
+  supportHighlights: z.array(surveyCaseSchema).max(5),
+  barriers: z.array(z.object({
+    label: z.string().min(1).max(100),
+    count: z.number().int().nonnegative(),
+  }).strict()).max(10),
+  recommendedActions: z.array(z.string().min(1).max(500)).min(1).max(5),
+  dataWarning: z.string().max(500).nullable(),
+}).strict();
+
+export function normalizeTransferReportRequest(value) {
+  const parsed = transferReportRequestSchema.parse(value);
+  return {
+    task: parsed.task,
+    courseCode: parsed.courseCode.toUpperCase(),
+    payload: {
+      classId: parsed.payload.classId ? normalizeWhitespace(parsed.payload.classId) : null,
+      className: parsed.payload.className ? normalizeWhitespace(parsed.payload.className) : null,
+      participantCount: parsed.payload.participantCount,
+      surveys: parsed.payload.surveys.map((survey) => ({
+        sourceId: survey.sourceId,
+        likert: [...survey.likert],
+        barriers: survey.barriers.map((barrier) => redactPersonalData(normalizeWhitespace(barrier))),
+        applied: redactPersonalData(normalizeWhitespace(survey.applied)),
+        support: redactPersonalData(normalizeWhitespace(survey.support)),
+      })),
+    },
+  };
+}
+
+export function validateTransferReportSources(result, payload) {
+  const allowedSourceIds = new Set(payload.surveys.map((survey) => survey.sourceId));
+  const referencedSourceIds = [
+    ...result.successCase.sourceIds,
+    ...result.blockedCase.sourceIds,
+    ...result.appliedHighlights.flatMap((highlight) => highlight.sourceIds),
+    ...result.supportHighlights.flatMap((highlight) => highlight.sourceIds),
+  ];
+  assertKnownSourceIds(referencedSourceIds, allowedSourceIds);
+
+  const actualBarrierCounts = payload.surveys.reduce((counts, survey) => {
+    uniqueSourceIds(survey.barriers).forEach((barrier) => counts.set(barrier, (counts.get(barrier) || 0) + 1));
+    return counts;
+  }, new Map());
+  const returnedLabels = new Set();
+  result.barriers.forEach(({ label, count }) => {
+    if (returnedLabels.has(label) || actualBarrierCounts.get(label) !== count) {
+      throw new Error("INVALID_BARRIER_COUNT");
+    }
+    returnedLabels.add(label);
+  });
+  if (returnedLabels.size !== actualBarrierCounts.size) {
+    throw new Error("INVALID_BARRIER_COUNT");
+  }
+}
+
+function surveyEvidence(sourceIds, surveyById, field) {
+  return uniqueSourceIds(sourceIds).map((sourceId) => {
+    const survey = surveyById.get(sourceId);
+    const quote = field === "applied"
+      ? survey.applied
+      : survey.support || survey.barriers.join(", ");
+    return { by: survey.by, quote };
+  });
+}
+
+export function projectTransferReportResult(result, payload, generatedAt = new Date().toISOString()) {
+  validateTransferReportSources(result, payload);
+  const surveyById = new Map(payload.surveys.map((survey, index) => [survey.sourceId, {
+    ...survey,
+    by: `응답자 ${index + 1}`,
+  }]));
+  const dataWarning = payload.surveys.length < 3 && !result.dataWarning
+    ? "응답 수가 적어 교육 전이의 공통 경향이나 인과로 일반화하기 어렵습니다."
+    : result.dataWarning;
+  return {
+    ...result,
+    dataWarning,
+    successCase: {
+      ...result.successCase,
+      evidence: surveyEvidence(result.successCase.sourceIds, surveyById, "applied"),
+    },
+    blockedCase: {
+      ...result.blockedCase,
+      evidence: surveyEvidence(result.blockedCase.sourceIds, surveyById, "support"),
+    },
+    appliedHighlights: result.appliedHighlights.map((highlight) => ({
+      ...highlight,
+      evidence: surveyEvidence(highlight.sourceIds, surveyById, "applied"),
+    })),
+    supportHighlights: result.supportHighlights.map((highlight) => ({
+      ...highlight,
+      evidence: surveyEvidence(highlight.sourceIds, surveyById, "support"),
+    })),
+    generatedAt,
+  };
+}
+
+export const missionDraftPayloadSchema = z.object({
+  goal: taskSourceSchema.nullable().optional(),
+  achievementResponses: z.array(taskSourceSchema).max(20),
+  jobReflection: taskSourceSchema.nullable().optional(),
+}).strict().superRefine((payload, context) => {
+  const sources = [
+    ...(payload.goal ? [payload.goal] : []),
+    ...payload.achievementResponses,
+    ...(payload.jobReflection ? [payload.jobReflection] : []),
+  ];
+  if (!sources.length) {
+    context.addIssue({ code: "custom", message: "At least one mission source is required.", path: [] });
+  }
+  addUniqueSourceIssues(sources, context, "achievementResponses");
+  addTotalTextIssue(sources, context, "achievementResponses");
+});
+
+export const missionDraftRequestSchema = z.object({
+  task: z.literal("missionDraft"),
+  courseCode: courseCodeSchema,
+  payload: missionDraftPayloadSchema,
+}).strict();
+
+export const missionDraftOutputSchema = z.object({
+  when: z.string().min(1).max(500),
+  what: z.string().min(1).max(500),
+  how: z.string().min(1).max(500),
+}).strict();
+
+export function normalizeMissionDraftRequest(value) {
+  const parsed = missionDraftRequestSchema.parse(value);
+  return {
+    task: parsed.task,
+    courseCode: parsed.courseCode.toUpperCase(),
+    payload: {
+      goal: parsed.payload.goal ? normalizeSource(parsed.payload.goal) : null,
+      achievementResponses: parsed.payload.achievementResponses.map(normalizeSource),
+      jobReflection: parsed.payload.jobReflection ? normalizeSource(parsed.payload.jobReflection) : null,
+    },
+  };
+}
+
+export function projectMissionDraftResult(result, _payload, generatedAt = new Date().toISOString()) {
+  return {
+    missionText: `[언제] ${result.when} [무엇을] ${result.what} [어떻게] ${result.how}`,
+    elements: { ...result },
+    ...result,
+    generatedAt,
+  };
+}
+
+const reportTurnSchema = z.object({
+  speaker: z.enum(["learner", "manager"]),
+  text: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH),
+}).strict();
+
+export const reportFeedbackPayloadSchema = z.object({
+  scenario: z.string().trim().min(1).max(MAX_SHORT_TEXT_LENGTH),
+  difficulty: z.string().trim().min(1).max(50),
+  turns: z.array(reportTurnSchema).min(1).max(MAX_REPORT_TURNS),
+}).strict().superRefine((payload, context) => {
+  addTotalTextIssue(payload.turns, context, "turns");
+});
+
+export const reportFeedbackRequestSchema = z.object({
+  task: z.literal("reportFeedback"),
+  courseCode: courseCodeSchema,
+  payload: reportFeedbackPayloadSchema,
+}).strict();
+
+const reportScoreSchema = z.number().int().min(1).max(5);
+
+export const reportFeedbackOutputSchema = z.object({
+  summary: z.string().min(1).max(2_000),
+  scores: z.object({
+    conclusionFirst: reportScoreSchema,
+    accuracy: reportScoreSchema,
+    cause: reportScoreSchema,
+    actionPlan: reportScoreSchema,
+    requestClarity: reportScoreSchema,
+    attitude: reportScoreSchema,
+  }).strict(),
+  firstFix: z.string().min(1).max(1_000),
+}).strict();
+
+export function normalizeReportFeedbackRequest(value) {
+  const parsed = reportFeedbackRequestSchema.parse(value);
+  return {
+    task: parsed.task,
+    courseCode: parsed.courseCode.toUpperCase(),
+    payload: {
+      scenario: redactPersonalData(normalizeWhitespace(parsed.payload.scenario)),
+      difficulty: normalizeWhitespace(parsed.payload.difficulty),
+      turns: parsed.payload.turns.map((turn) => ({
+        speaker: turn.speaker,
+        text: redactPersonalData(normalizeWhitespace(turn.text)),
+      })),
+    },
+  };
+}
+
+export function projectReportFeedbackResult(result, _payload, generatedAt) {
+  return withGeneratedAt(result, generatedAt);
+}

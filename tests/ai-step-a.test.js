@@ -206,8 +206,8 @@ test("공통 API는 live 결과를 저장하고 같은 입력의 두 번째 호�
   }
 });
 
-test("공통 API는 다른 task와 비어 있는 목표를 안전한 코드로 거부한다", async () => {
-  const wrongTask = await invokeHandler({ task: "pollCluster", courseCode: "NH-2480", payload: {} });
+test("공통 API는 알 수 없는 task와 비어 있는 목표를 안전한 코드로 거부한다", async () => {
+  const wrongTask = await invokeHandler({ task: "unknownTask", courseCode: "NH-2480", payload: {} });
   const emptyGoals = await invokeHandler({ task: "goalCohort", courseCode: "NH-2480", payload: { goals: [] } });
   assert.equal(wrongTask.statusCode, 400);
   assert.equal(wrongTask.body.error.code, "INVALID_TASK");
