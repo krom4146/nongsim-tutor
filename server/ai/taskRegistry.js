@@ -1,9 +1,11 @@
 import { AI_TASK_PROMPTS, buildAiTaskOpenAiRequest } from "./prompts.js";
 import {
   boardAnalysisRequestSchema,
+  goalComposeRequestSchema,
   missionDraftRequestSchema,
   normalizeBoardAnalysisRequest,
   normalizeGoalCohortRequest,
+  normalizeGoalComposeRequest,
   normalizeMissionDraftRequest,
   normalizePollClusterRequest,
   normalizeReportFeedbackRequest,
@@ -11,6 +13,7 @@ import {
   pollClusterRequestSchema,
   projectBoardAnalysisResult,
   projectGoalCohortResult,
+  projectGoalComposeResult,
   projectMissionDraftResult,
   projectPollClusterResult,
   projectReportFeedbackResult,
@@ -19,6 +22,7 @@ import {
   transferReportRequestSchema,
   goalCohortRequestSchema,
   validateGoalCohortSources,
+  validateGoalComposeSources,
   validatePollClusterSources,
   validateTransferReportSources,
 } from "./schemas.js";
@@ -57,6 +61,14 @@ export const AI_TASK_REGISTRY = Object.freeze({
     projectResult: (result, payload, generatedAt) => projectGoalCohortResult(result, payload.goals, generatedAt),
     hasSufficientData: (payload) => payload.goals.length > 0,
     isExplicitlyEmpty: (payload) => Array.isArray(payload?.goals) && payload.goals.length === 0,
+  }),
+  goalCompose: createTaskDefinition("goalCompose", {
+    requestSchema: goalComposeRequestSchema,
+    normalizeRequest: normalizeGoalComposeRequest,
+    validateEvidence: validateGoalComposeSources,
+    projectResult: projectGoalComposeResult,
+    hasSufficientData: (payload) => payload.answers.length === 3,
+    isExplicitlyEmpty: (payload) => Array.isArray(payload?.answers) && payload.answers.length === 0,
   }),
   pollCluster: createTaskDefinition("pollCluster", {
     requestSchema: pollClusterRequestSchema,

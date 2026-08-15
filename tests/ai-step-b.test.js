@@ -168,20 +168,21 @@ async function withServerEnvironment(callback) {
   }
 }
 
-test("레지스트리는 6개 task에 서로 다른 요청·출력 스키마와 promptVersion을 둔다", () => {
+test("등록된 task는 서로 다른 요청·출력 스키마와 promptVersion을 둔다", () => {
   const definitions = Object.values(AI_TASK_REGISTRY);
   assert.deepEqual(Object.keys(AI_TASK_REGISTRY), [
     "goalCohort",
+    "goalCompose",
     "pollCluster",
     "boardAnalysis",
     "transferReport",
     "missionDraft",
     "reportFeedback",
   ]);
-  assert.equal(new Set(definitions.map(({ requestSchema }) => requestSchema)).size, 6);
-  assert.equal(new Set(definitions.map(({ outputSchema }) => outputSchema)).size, 6);
-  assert.equal(new Set(definitions.map(({ promptVersion }) => promptVersion)).size, 6);
-  assert.equal(new Set(definitions.map(({ outputFormatName }) => outputFormatName)).size, 6);
+  assert.equal(new Set(definitions.map(({ requestSchema }) => requestSchema)).size, 7);
+  assert.equal(new Set(definitions.map(({ outputSchema }) => outputSchema)).size, 7);
+  assert.equal(new Set(definitions.map(({ promptVersion }) => promptVersion)).size, 7);
+  assert.equal(new Set(definitions.map(({ outputFormatName }) => outputFormatName)).size, 7);
   definitions.forEach((definition) => {
     assert.ok(definition.purpose.length > 0);
     assert.match(definition.systemPrompt, /[가-힣]/u);

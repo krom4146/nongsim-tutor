@@ -24,6 +24,7 @@ import {
   AI_MODE,
   getAIConfigurationError,
   requestGoalCohortAnalysis,
+  requestGoalCompose,
 } from "./services/aiService";
 import {
   anonymizeCsvRows,
@@ -1590,6 +1591,14 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
   const [goalStep, setGoalStep] = useState(0);
   const [goalAnswers, setGoalAnswers] = useState(["", "", ""]);
   const [goalDraft, setGoalDraft] = useState(null);
+  const [goalPlanDraft, setGoalPlanDraft] = useState(null);
+  const [goalComposeStatus, setGoalComposeStatus] = useState("idle");
+  const [goalComposeError, setGoalComposeError] = useState("");
+  const [goalComposeMeta, setGoalComposeMeta] = useState(null);
+  const [goalComposeWarning, setGoalComposeWarning] = useState(null);
+  const goalComposePendingRef = useRef(false);
+  const goalComposeRequestRef = useRef(0);
+  const goalComposeAbortRef = useRef(null);
   const [answer, setAnswer] = useState("");
   const [selectedChoice, setSelectedChoice] = useState("");
   const [answerPending, setAnswerPending] = useState(false);
@@ -1620,6 +1629,22 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
     setPhaseTab(phase);
     setView("home");
   }, [phase, course.code]);
+
+  useEffect(() => {
+    if (view === "goal") return;
+    goalComposeRequestRef.current += 1;
+    goalComposeAbortRef.current?.abort();
+    goalComposeAbortRef.current = null;
+    goalComposePendingRef.current = false;
+    setGoalComposeStatus("idle");
+    setGoalComposeError("");
+    setGoalComposeMeta(null);
+    setGoalComposeWarning(null);
+  }, [view, course.code]);
+
+  useEffect(() => () => {
+    goalComposeAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (window.location.hash === "#survey" && phase === "transfer" && !mySurvey) {
@@ -1684,15 +1709,38 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
   }[stage];
   const mission = nextMission;
 
+  const resetGoalCompose = () => {
+    goalComposeRequestRef.current += 1;
+    goalComposeAbortRef.current?.abort();
+    goalComposeAbortRef.current = null;
+    goalComposePendingRef.current = false;
+    setGoalComposeStatus("idle");
+    setGoalComposeError("");
+    setGoalComposeMeta(null);
+    setGoalComposeWarning(null);
+  };
+
   const openGoalEditor = () => {
+    resetGoalCompose();
     if (myGoal) {
       setGoalDraft(myGoal.goalText || myGoal.text || "");
+      setGoalPlanDraft({
+        goalText: myGoal.goalText || myGoal.text || "",
+        focusPoint: myGoal.focusPoint || "핵심 개념을 현장 사례와 연결하는 방법에 집중하기",
+        actionMission: myGoal.actionMission || "배운 내용을 현업에서 1회 실천하고 결과를 짧게 기록하기",
+      });
       setGoalAnswers(["", "", ""]);
       setGoalStep(0);
     } else {
       setGoalDraft(null);
+      setGoalPlanDraft(null);
     }
     setView("goal");
+  };
+
+  const closeGoalEditor = () => {
+    resetGoalCompose();
+    setView("home");
   };
 
   const saveGoal = async () => {
@@ -1700,7 +1748,10 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
     if (phase !== "before") return notify("입교 전 목표 작성 기간이 종료되었습니다. 작성된 내용은 조회만 할 수 있습니다.");
     if (!goalDraft || goalDraft.trim().length < 8) return notify("목표를 조금 더 구체적으로 작성해주세요.");
     const refined = goalDraft.trim().endsWith("겠습니다.") ? goalDraft.trim() : `${goalDraft.trim().replace(/[.!]$/, "")}하겠습니다.`;
-    const plan = createGoalPlan(refined, goalAnswers);
+    const plan = {
+      ...(goalPlanDraft || createGoalPlan(refined, goalAnswers)),
+      goalText: refined,
+    };
     const goal = {
       id: myGoal?.id || crypto.randomUUID(),
       participantId,
@@ -1722,6 +1773,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
         return;
       }
       setGoalDraft(null);
+      setGoalPlanDraft(null);
       setGoalAnswers(["", "", ""]);
       setGoalStep(0);
       setView("home");
@@ -1732,12 +1784,60 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
     }
   };
 
-  const composeGoal = () => {
-    if (!goalAnswers[goalStep].trim()) return notify("질문에 대한 답변을 작성해주세요.");
-    const [expectation, challenge, success] = goalAnswers;
-    setGoalDraft(
-      `현재 현업에서 “${challenge.trim()}”라고 느끼고 있습니다. 이번 교육에서는 “${expectation.trim()}”라는 기대를 구체적인 배움과 실천으로 연결하겠습니다. 교육이 끝난 뒤에는 “${success.trim()}”라고 말할 수 있도록 배운 내용을 현장에 꾸준히 적용하겠습니다.`
-    );
+  const composeGoal = async () => {
+    if (goalComposePendingRef.current) return;
+    const normalizedAnswers = goalAnswers.map((answer) => answer.trim());
+    if (normalizedAnswers.some((answer) => !answer)) return notify("세 질문에 대한 답변을 모두 작성해주세요.");
+    const [expectation, challenge, success] = normalizedAnswers;
+
+    if (AI_MODE === "mock") {
+      const mockGoalText = `현재 현업에서 “${challenge}”라고 느끼고 있습니다. 이번 교육에서는 “${expectation}”라는 기대를 구체적인 배움과 실천으로 연결하겠습니다. 교육이 끝난 뒤에는 “${success}”라고 말할 수 있도록 배운 내용을 현장에 꾸준히 적용하겠습니다.`;
+      const mockPlan = createGoalPlan(mockGoalText, normalizedAnswers);
+      setGoalDraft(mockPlan.goalText);
+      setGoalPlanDraft(mockPlan);
+      setGoalComposeStatus("success");
+      setGoalComposeError("");
+      setGoalComposeWarning(null);
+      setGoalComposeMeta({ mode: "mock", source: "mock" });
+      return;
+    }
+
+    const requestId = goalComposeRequestRef.current + 1;
+    goalComposeRequestRef.current = requestId;
+    goalComposeAbortRef.current?.abort();
+    const controller = new AbortController();
+    goalComposeAbortRef.current = controller;
+    goalComposePendingRef.current = true;
+    setGoalComposeStatus("loading");
+    setGoalComposeError("");
+    setGoalComposeWarning(null);
+    setGoalComposeMeta(null);
+
+    try {
+      const result = await requestGoalCompose(course, goalQuestions, normalizedAnswers, {
+        signal: controller.signal,
+      });
+      if (requestId !== goalComposeRequestRef.current) return;
+      const plan = {
+        goalText: result.goalText,
+        focusPoint: result.focusPoint,
+        actionMission: result.actionMission,
+      };
+      setGoalDraft(plan.goalText);
+      setGoalPlanDraft(plan);
+      setGoalComposeMeta(result.meta);
+      setGoalComposeWarning(result.warning);
+      setGoalComposeStatus("success");
+    } catch (error) {
+      if (requestId !== goalComposeRequestRef.current || error?.code === "REQUEST_CANCELLED") return;
+      setGoalComposeStatus("error");
+      setGoalComposeError(error?.message || "AI가 목표를 정리하지 못했습니다. 다시 시도해 주세요.");
+    } finally {
+      if (requestId === goalComposeRequestRef.current) {
+        goalComposePendingRef.current = false;
+        goalComposeAbortRef.current = null;
+      }
+    }
   };
 
   const submitAnswer = async () => {
@@ -2017,22 +2117,26 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
                 onChange={(e) => setGoalAnswers(goalAnswers.map((answer, index) => index === goalStep ? e.target.value : answer))}
                 placeholder="자유롭게 적어 주세요"
                 aria-label={`목표 질문 ${goalStep + 1} 답변`}
+                disabled={goalComposeStatus === "loading"}
               />
               <div className="goal-wizard-actions">
-                {goalStep > 0 && <button className="secondary" onClick={() => setGoalStep(goalStep - 1)}>이전</button>}
+                {goalStep > 0 && <button className="secondary" disabled={goalComposeStatus === "loading"} onClick={() => setGoalStep(goalStep - 1)}>이전</button>}
                 {goalStep < goalQuestions.length - 1
                   ? <button className="primary" disabled={!goalAnswers[goalStep].trim()} onClick={() => setGoalStep(goalStep + 1)}>다음</button>
-                  : <button className="gold-button" disabled={!goalAnswers[goalStep].trim()} onClick={composeGoal}>AI로 정리하기</button>}
+                  : <button className="gold-button" disabled={!goalAnswers[goalStep].trim() || goalComposeStatus === "loading"} onClick={() => { void composeGoal(); }}>{goalComposeStatus === "loading" ? "AI 정리 중…" : "AI로 정리하기"}</button>}
               </div>
+              {goalComposeStatus === "loading" && <div className="goal-ai-state is-loading" role="status" aria-live="polite">세 답변을 바탕으로 목표 다짐문을 정리하고 있습니다.</div>}
+              {goalComposeStatus === "error" && <div className="goal-ai-state is-error" role="alert"><span>{goalComposeError}</span><button className="secondary compact" onClick={() => { void composeGoal(); }}>다시 시도</button></div>}
             </div>
           ) : (
             <div className="goal-draft-card">
-              <span>AI가 정리한 목표 — 자유롭게 다듬어도 좋아요</span>
+              <span>{goalComposeMeta?.mode === "mock" ? "데모 분석(AI 미연결)" : goalComposeMeta?.source === "cache" ? "AI 정리 · 캐시" : goalComposeMeta?.mode === "ai" ? "실제 AI 정리" : "저장된 목표"} — 자유롭게 다듬어도 좋아요</span>
+              {goalComposeWarning && <p className="goal-ai-warning" role="status">{goalComposeWarning.message}</p>}
               <textarea value={goalDraft} onChange={(e) => setGoalDraft(e.target.value)} aria-label="AI가 정리한 교육 목표 수정" />
-              <div><button disabled={outcomePending} className="secondary" onClick={() => setGoalDraft(null)}>다시 답하기</button><button disabled={outcomePending} className="primary" onClick={saveGoal}>{outcomePending ? "저장 중…" : myGoal ? "수정 내용 저장하기" : "나의 목표 저장하기"}</button></div>
+              <div><button disabled={outcomePending} className="secondary" onClick={() => { resetGoalCompose(); setGoalDraft(null); setGoalPlanDraft(null); }}>다시 답하기</button><button disabled={outcomePending} className="primary" onClick={saveGoal}>{outcomePending ? "저장 중…" : myGoal ? "수정 내용 저장하기" : "나의 목표 저장하기"}</button></div>
             </div>
           )}
-          <button className="goal-cancel" onClick={() => setView("home")}>← 돌아가기</button>
+          <button className="goal-cancel" onClick={closeGoalEditor}>← 돌아가기</button>
         </ActionPanel>
       )}
       {view === "poll" && (

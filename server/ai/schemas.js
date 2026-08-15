@@ -192,6 +192,61 @@ function withGeneratedAt(result, generatedAt = new Date().toISOString()) {
   return { ...result, generatedAt };
 }
 
+const goalComposeAnswerSchema = taskSourceSchema.extend({
+  question: z.string().trim().min(1).max(500),
+}).strict();
+
+export const goalComposePayloadSchema = z.object({
+  answers: z.array(goalComposeAnswerSchema).length(3),
+}).strict().superRefine((payload, context) => {
+  addUniqueSourceIssues(payload.answers, context, "answers");
+  addTotalTextIssue(payload.answers.map((answer) => ({
+    text: `${answer.question} ${answer.text}`,
+  })), context, "answers");
+});
+
+export const goalComposeRequestSchema = z.object({
+  task: z.literal("goalCompose"),
+  courseCode: courseCodeSchema,
+  payload: goalComposePayloadSchema,
+}).strict();
+
+export const goalComposeOutputSchema = z.object({
+  goalText: z.string().min(8).max(1_000),
+  focusPoint: z.string().min(1).max(700),
+  actionMission: z.string().min(1).max(700),
+  sourceIds: z.array(taskSourceIdSchema).length(3),
+}).strict();
+
+export function normalizeGoalComposeRequest(value) {
+  const parsed = goalComposeRequestSchema.parse(value);
+  return {
+    task: parsed.task,
+    courseCode: parsed.courseCode.toUpperCase(),
+    payload: {
+      answers: parsed.payload.answers.map((answer) => ({
+        sourceId: answer.sourceId,
+        question: redactPersonalData(normalizeWhitespace(answer.question)),
+        text: redactPersonalData(normalizeWhitespace(answer.text)),
+      })),
+    },
+  };
+}
+
+export function validateGoalComposeSources(result, payload) {
+  const allowedSourceIds = new Set(payload.answers.map((answer) => answer.sourceId));
+  assertKnownSourceIds(result.sourceIds, allowedSourceIds);
+  if (new Set(result.sourceIds).size !== allowedSourceIds.size
+    || result.sourceIds.some((sourceId) => !allowedSourceIds.has(sourceId))) {
+    throw new Error("INCOMPLETE_SOURCE_COVERAGE");
+  }
+}
+
+export function projectGoalComposeResult(result, payload, generatedAt = new Date().toISOString()) {
+  validateGoalComposeSources(result, payload);
+  return withGeneratedAt(result, generatedAt);
+}
+
 const pollRoundSchema = z.object({
   sourceId: taskSourceIdSchema,
   prompt: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH),

@@ -89,6 +89,7 @@ create table if not exists public.ai_analyses (
   task text not null check (
     task in (
       'goalCohort',
+      'goalCompose',
       'pollCluster',
       'boardAnalysis',
       'transferReport',
