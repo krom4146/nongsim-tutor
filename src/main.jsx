@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import {
@@ -8,8 +8,11 @@ import {
   getCourse,
   getCourses,
   saveCourse,
+  saveGoal as saveStoredGoal,
+  saveMission as saveStoredMission,
   saveRound,
   saveRoundItem,
+  saveSurvey as saveStoredSurvey,
   setActiveCourseCode,
   setCollection,
 } from "./services/dataStore";
@@ -666,7 +669,6 @@ function createFollowupQuestions(scenario, difficulty) {
 /* ---- inlined from src\services\reportService.js ---- */
 function anonymizeSurveyResponses(surveys = []) {
   return (surveys || []).map((survey, index) => ({
-    id: survey.id,
     label: `응답자 ${index + 1}`,
     classId: survey.classId || DEFAULT_CLASS_ID,
     className: survey.className || DEFAULT_CLASS_NAME,
@@ -676,17 +678,6 @@ function anonymizeSurveyResponses(surveys = []) {
     support: survey.support || "",
     submittedAt: survey.submittedAt || survey.createdAt || "",
   }));
-}
-
-function surveySubmissionStatus(course, classId = "all") {
-  const submittedIds = new Set((course.surveys || []).filter((item) => matchesClass(item, classId)).map((item) => item.participantId));
-  return collectCourseStudents(course)
-    .filter((student) => matchesClass(student, classId))
-    .map((student) => ({
-      name: student.name || student.studentName || "이름 없음",
-      className: student.className || DEFAULT_CLASS_NAME,
-      submitted: submittedIds.has(student.participantId || student.id),
-    }));
 }
 
 function reportData(course, classId = "all") {
@@ -718,13 +709,58 @@ function reportData(course, classId = "all") {
       submitted: filtered.surveys.length,
       averageLikert: averageLikert(filtered.surveys),
       responses: anonymousSurveys,
-      submissionStatus: surveySubmissionStatus(course, classId),
       missions: filtered.missions,
       missionCheckpoints: filtered.missions.flatMap((mission) => mission.missionCheckpoints || []),
     },
     improvementSuggestions: buildAnalysis(filtered).recommendedActions,
     notice: "AI 분석 결과는 제공된 응답 안에서 생성되었으며 교수요원 검토가 필요합니다.",
   };
+}
+
+const PRIVATE_EXPORT_KEYS = new Set([
+  "id",
+  "participantId",
+  "participant_id",
+  "goalId",
+  "name",
+  "studentName",
+  "by",
+  "participantCode",
+  "reentryToken",
+  "personalFollowupLink",
+  "deviceId",
+  "fcmToken",
+]);
+
+function anonymizeExportValue(value) {
+  if (Array.isArray(value)) return value.map(anonymizeExportValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.entries(value).reduce((result, [key, entry]) => {
+    if (!PRIVATE_EXPORT_KEYS.has(key)) result[key] = anonymizeExportValue(entry);
+    return result;
+  }, {});
+}
+
+function anonymizeReportExport(report) {
+  const anonymous = anonymizeExportValue(report);
+  return {
+    ...anonymous,
+    course: {
+      ...anonymous.course,
+      name: report.course.name,
+    },
+  };
+}
+
+function anonymizeCsvRows(items = []) {
+  return items.map((item, index) => ({
+    courseId: item.courseId,
+    classId: item.classId || DEFAULT_CLASS_ID,
+    className: item.className || DEFAULT_CLASS_NAME,
+    studentName: `응답자 ${index + 1}`,
+    responseType: item.responseType,
+    createdAt: item.createdAt || item.submittedAt || "",
+  }));
 }
 
 function downloadReport(course, format, classId = "all") {
@@ -735,28 +771,22 @@ function downloadReport(course, format, classId = "all") {
   let ext;
 
   if (format === "json") {
-    content = JSON.stringify(report, null, 2);
+    content = JSON.stringify(anonymizeReportExport(report), null, 2);
     type = "application/json;charset=utf-8";
     ext = "json";
   } else {
-    const anonymousSurveys = anonymizeSurveyResponses(filtered.surveys).map((item) => ({
-      ...item,
-      studentName: item.label,
-      responseType: "survey",
-      createdAt: item.submittedAt,
-    }));
-    const responseRows = [
-      ...filtered.goals.map((item) => ({ ...item, studentName: item.name, responseType: "goal" })),
-      ...filtered.achievements.map((item) => ({ ...item, studentName: item.name, responseType: "achievement" })),
-      ...anonymousSurveys,
-      ...filtered.jobReflections.map((item) => ({ ...item, responseType: "jobReflection" })),
-      ...filtered.reportTrainings.map((item) => ({ ...item, studentName: item.name, responseType: "reportTraining" })),
-      ...filtered.rounds.flatMap((round) => round.items.map((item) => ({ ...item, studentName: item.by, responseType: round.kind }))),
-    ];
+    const responseRows = anonymizeCsvRows([
+      ...filtered.goals.map((item) => ({ ...item, courseId: course.code, responseType: "goal" })),
+      ...filtered.achievements.map((item) => ({ ...item, courseId: course.code, responseType: "achievement" })),
+      ...filtered.surveys.map((item) => ({ ...item, courseId: course.code, responseType: "survey" })),
+      ...filtered.jobReflections.map((item) => ({ ...item, courseId: course.code, responseType: "jobReflection" })),
+      ...filtered.reportTrainings.map((item) => ({ ...item, courseId: course.code, responseType: "reportTraining" })),
+      ...filtered.rounds.flatMap((round) => round.items.map((item) => ({ ...item, courseId: course.code, responseType: round.kind }))),
+    ]);
     const rows = [
       ["courseId", "classId", "className", "studentName", "responseType", "createdAt"],
       ...responseRows.map((item) => [
-        course.code,
+        item.courseId,
         item.classId || "class-1",
         item.className || "1반",
         item.studentName || "",
@@ -968,6 +998,51 @@ function App() {
     return { ...result, item: savedItem };
   };
 
+  const saveOutcomeGoal = async (courseSnapshot, goal) => {
+    const result = await saveStoredGoal(courseSnapshot, goal);
+    if (!result.ok) return result;
+    const savedGoal = { ...goal, ...result.goal };
+    applyActivityUpdate(courseSnapshot.code, (current) => ({
+      ...current,
+      goals: mergeEntityById(current.goals, savedGoal),
+    }));
+    return { ...result, goal: savedGoal };
+  };
+
+  const saveOutcomeMission = async (courseSnapshot, mission) => {
+    const result = await saveStoredMission(courseSnapshot, mission);
+    if (!result.ok) return result;
+    const savedMission = { ...mission, ...result.mission };
+    applyActivityUpdate(courseSnapshot.code, (current) => ({
+      ...current,
+      missions: mergeEntityById(current.missions, savedMission),
+    }));
+    return { ...result, mission: savedMission };
+  };
+
+  const saveOutcomeSurvey = async (courseSnapshot, survey) => {
+    const result = await saveStoredSurvey(courseSnapshot, survey);
+    if (!result.ok) return result;
+    const savedSurvey = { ...survey, ...result.survey };
+    applyActivityUpdate(courseSnapshot.code, (current) => ({
+      ...current,
+      surveys: mergeEntityById(current.surveys, savedSurvey),
+    }));
+    return { ...result, survey: savedSurvey };
+  };
+
+  const reloadCourseData = useCallback(async (courseCode) => {
+    try {
+      const nextCourse = await getCourse(courseCode);
+      if (!nextCourse) return { ok: false, error: "Course not found." };
+      setCourses((items) => items.map((item) => item.code === nextCourse.code ? nextCourse : item));
+      setCourseState((current) => current?.code === nextCourse.code ? nextCourse : current);
+      return { ok: true, course: nextCourse };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }, []);
+
   const changeActivityReaction = async (courseSnapshot, roundId, itemId, reactionKey, delta, previousReactions) => {
     const optimisticReactions = {
       ...(previousReactions || {}),
@@ -1151,6 +1226,19 @@ function App() {
     };
     const result = await persistCourse(nextCourse);
     if (!result.ok) return result;
+    const reassignedGoals = classInfo
+      ? matchedCourse.goals
+        .filter((goal) => goal.participantId === profile.participantId && !goal.classId)
+        .map((goal) => ({ ...goal, classId: classInfo.id, className: classInfo.name }))
+      : [];
+    if (reassignedGoals.length) {
+      const goalResults = await Promise.all(reassignedGoals.map((goal) => saveStoredGoal(nextCourse, goal)));
+      const failedGoal = goalResults.find((goalResult) => !goalResult.ok);
+      if (failedGoal) {
+        setToast("반 배정은 저장됐지만 목표의 반 정보를 반영하지 못했습니다. 다시 시도해 주세요.");
+        return failedGoal;
+      }
+    }
     setCourses((items) => items.map((item) => item.code === nextCourse.code ? nextCourse : item));
     setCourseState(nextCourse);
     setCode(nextCourse.code);
@@ -1444,8 +1532,8 @@ function App() {
       <Header course={course} role={role} onHome={() => setRole(null)} onExit={() => setRole(null)} />
       {DATA_MODE === "supabase" && course && <RealtimeStatus status={realtimeStatus} />}
       {role === "student"
-        ? <StudentApp course={course} setCourse={setCourse} onSaveRoundItem={saveActivityItem} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
-        : <ProfessorApp course={course || initialCourseRef.current} setCourse={setCourse} onSaveRound={saveActivityRound} onBumpReaction={changeActivityReaction} courses={courses} ideologyStamps={ideologyStamps} setIdeologyStamps={setIdeologyStamps} onCreateCourse={createRegisteredCourse} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onArchiveCourse={archiveRegisteredCourse} initialTab={course ? professorStartTab : "create"} onExit={() => setRole(null)} notify={setToast} />}
+        ? <StudentApp course={course} setCourse={setCourse} onSaveGoal={saveOutcomeGoal} onSaveMission={saveOutcomeMission} onSaveSurvey={saveOutcomeSurvey} onSaveRoundItem={saveActivityItem} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
+        : <ProfessorApp course={course || initialCourseRef.current} setCourse={setCourse} onReloadCourse={reloadCourseData} onSaveRound={saveActivityRound} onBumpReaction={changeActivityReaction} courses={courses} ideologyStamps={ideologyStamps} setIdeologyStamps={setIdeologyStamps} onCreateCourse={createRegisteredCourse} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onArchiveCourse={archiveRegisteredCourse} initialTab={course ? professorStartTab : "create"} onExit={() => setRole(null)} notify={setToast} />}
       {toast && <Toast>{toast}</Toast>}
     </div>
   );
@@ -1501,12 +1589,12 @@ function RealtimeStatus({ status }) {
   return <div className={`realtime-status ${state.className}`} role="status" aria-live="polite">{state.text}</div>;
 }
 
-function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamps, onExit, notify }) {
+function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey, onSaveRoundItem, student, ideologyStamps, onExit, notify }) {
   const participantId = student?.id || "student-demo";
   const participantName = student?.name || "교육생";
   const myGoal = course.goals.find((goal) => goal.participantId === participantId);
   const myAchievement = course.achievements.find((item) => item.participantId === participantId);
-  const mySurvey = course.surveys.find((item) => item.participantId === participantId);
+  const participantSurvey = course.surveys.find((item) => item.participantId === participantId);
   const myMission = course.missions.find((item) => item.participantId === participantId);
   const myLatestJobReflection = [...(course.jobReflections || [])]
     .filter((item) => item.participantId === participantId)
@@ -1533,12 +1621,16 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
   const [studentFollowupAnswer, setStudentFollowupAnswer] = useState("");
   const [studentRoleplayFeedback, setStudentRoleplayFeedback] = useState(null);
   const [checkpointResponses, setCheckpointResponses] = useState({});
+  const [outcomePending, setOutcomePending] = useState(false);
+  const outcomePendingRef = useRef(false);
   const [achievementStep, setAchievementStep] = useState(0);
   const [achievementAnswers, setAchievementAnswers] = useState(["", "", ""]);
   const [achievementDraft, setAchievementDraft] = useState(null);
   const [survey, setSurvey] = useState({ applied: "", support: "", likert: [0, 0, 0, 0, 0], barriers: [] });
+  const [submittedSurvey, setSubmittedSurvey] = useState(null);
   const [followupDemoNotification, setFollowupDemoNotification] = useState(null);
   const [surveyDemoPreview, setSurveyDemoPreview] = useState(false);
+  const mySurvey = participantSurvey || submittedSurvey;
   const phase = getCoursePhase(course);
   const [phaseTab, setPhaseTab] = useState(phase);
   const todayReflection = (course.jobReflections || []).some((item) => item.participantId === participantId && item.date === todayInKorea());
@@ -1613,31 +1705,52 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
   }[stage];
   const mission = nextMission;
 
-  const saveGoal = () => {
+  const openGoalEditor = () => {
+    if (myGoal) {
+      setGoalDraft(myGoal.goalText || myGoal.text || "");
+      setGoalAnswers(["", "", ""]);
+      setGoalStep(0);
+    } else {
+      setGoalDraft(null);
+    }
+    setView("goal");
+  };
+
+  const saveGoal = async () => {
+    if (outcomePendingRef.current) return;
     if (phase !== "before") return notify("입교 전 목표 작성 기간이 종료되었습니다. 작성된 내용은 조회만 할 수 있습니다.");
     if (!goalDraft || goalDraft.trim().length < 8) return notify("목표를 조금 더 구체적으로 작성해주세요.");
     const refined = goalDraft.trim().endsWith("겠습니다.") ? goalDraft.trim() : `${goalDraft.trim().replace(/[.!]$/, "")}하겠습니다.`;
     const plan = createGoalPlan(refined, goalAnswers);
-    setCourse((c) => ({
-      ...c,
-      goals: [...c.goals, {
-        id: uid("goal"),
-        participantId,
-        name: participantName,
-        classId: classId || null,
-        className: classId ? className : "미배정",
-        text: plan.goalText,
-        goalText: plan.goalText,
-        focusPoint: plan.focusPoint,
-        actionMission: plan.actionMission,
-        createdAt: now(),
-      }],
-    }));
-    setGoalDraft(null);
-    setGoalAnswers(["", "", ""]);
-    setGoalStep(0);
-    setView("home");
-    notify("나의 교육 목표가 저장되었습니다.");
+    const goal = {
+      id: myGoal?.id || crypto.randomUUID(),
+      participantId,
+      name: participantName,
+      classId: classId || null,
+      className: classId ? className : "미배정",
+      text: plan.goalText,
+      goalText: plan.goalText,
+      focusPoint: plan.focusPoint,
+      actionMission: plan.actionMission,
+      createdAt: myGoal?.createdAt || now(),
+    };
+    outcomePendingRef.current = true;
+    setOutcomePending(true);
+    try {
+      const result = await onSaveGoal(course, goal);
+      if (!result.ok) {
+        notify("목표가 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
+      setGoalDraft(null);
+      setGoalAnswers(["", "", ""]);
+      setGoalStep(0);
+      setView("home");
+      notify(myGoal ? "나의 교육 목표를 수정했습니다." : "나의 교육 목표가 저장되었습니다.");
+    } finally {
+      outcomePendingRef.current = false;
+      setOutcomePending(false);
+    }
   };
 
   const composeGoal = () => {
@@ -1683,27 +1796,48 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
     }
   };
 
-  const saveAchievement = () => {
+  const saveAchievement = async () => {
+    if (outcomePendingRef.current) return;
     if (phase !== "completion") return notify("수료 성찰은 교육 종료일에만 작성할 수 있습니다.");
     if (!achievementDraft?.summary.trim()) return notify("수료 성찰 내용을 확인해주세요.");
     const achievement = { id: uid("ach"), participantId, name: participantName, classId, className, text: achievementDraft.summary.trim(), answers: achievementAnswers, createdAt: now() };
+    const missionText = achievementDraft.mission.trim();
     const missionItem = {
-      id: uid("mission"),
+      id: crypto.randomUUID(),
       participantId,
       classId,
       className,
       goalId: myGoal?.id,
-      missionText: achievementDraft.mission.trim(),
+      text: missionText,
+      missionText,
+      elements: missionElementSummary(missionText),
       dueDate: getTransferDate(course),
       status: "assigned",
       missionCheckpoints: createMissionCheckpoints(),
+      createdAt: now(),
     };
-    setCourse((c) => ({ ...c, achievements: [...c.achievements, achievement], missions: [...c.missions, missionItem] }));
-    setAchievementDraft(null);
-    setAchievementAnswers(["", "", ""]);
-    setAchievementStep(0);
-    setView("home");
-    notify("수료 성찰과 현업 미션이 생성되었습니다.");
+    outcomePendingRef.current = true;
+    setOutcomePending(true);
+    try {
+      const result = await onSaveMission(course, missionItem);
+      if (!result.ok) {
+        notify("현업 미션이 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
+      setCourse((current) => ({
+        ...current,
+        achievements: [...current.achievements, achievement],
+        missions: mergeEntityById(current.missions, result.mission),
+      }));
+      setAchievementDraft(null);
+      setAchievementAnswers(["", "", ""]);
+      setAchievementStep(0);
+      setView("home");
+      notify("수료 성찰과 현업 미션이 생성되었습니다.");
+    } finally {
+      outcomePendingRef.current = false;
+      setOutcomePending(false);
+    }
   };
 
   const composeAchievement = () => {
@@ -1715,21 +1849,56 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
     });
   };
 
-  const saveSurvey = () => {
+  const saveSurvey = async () => {
+    if (outcomePendingRef.current) return;
     if (surveyDemoPreview && phase !== "transfer") return notify("시연 화면입니다. 실제 응답은 교육 종료 2개월 후 저장됩니다.");
     if (phase !== "transfer") return notify(`현업활용도 조사는 ${getTransferDate(course)}부터 작성할 수 있습니다.`);
     if (survey.likert.some((value) => !value)) return notify("객관식 문항에 모두 답해주세요.");
     if (!survey.applied.trim() || !survey.support.trim()) return notify("현업 적용 사례와 필요한 지원을 모두 작성해주세요.");
-    setCourse((c) => ({
-      ...c,
-      surveys: [...c.surveys, { id: uid("survey"), participantId, classId, className, ...survey, submittedAt: now(), createdAt: now() }],
-      missions: c.missions.map((mission) => mission.participantId === participantId ? {
-        ...mission,
-        missionCheckpoints: (mission.missionCheckpoints || createMissionCheckpoints()).map((checkpoint) => checkpoint.week === 8 ? { ...checkpoint, status: "completed", response: "현업활용도 제출 완료" } : checkpoint),
-      } : mission),
-    }));
-    setView("home");
-    notify("현업 적용도 응답을 완료했습니다.");
+    const submittedAt = now();
+    const surveyRecord = {
+      id: crypto.randomUUID(),
+      classId,
+      className,
+      likert: [...survey.likert],
+      barriers: [...survey.barriers],
+      applied: survey.applied.trim(),
+      support: survey.support.trim(),
+      submittedAt,
+      createdAt: submittedAt,
+    };
+    outcomePendingRef.current = true;
+    setOutcomePending(true);
+    try {
+      const surveyResult = await onSaveSurvey(course, surveyRecord);
+      if (!surveyResult.ok) {
+        notify("현업 적용도 응답이 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
+      setSubmittedSurvey(surveyResult.survey);
+      if (myMission) {
+        const updatedMission = {
+          ...myMission,
+          missionCheckpoints: (myMission.missionCheckpoints || createMissionCheckpoints()).map((checkpoint) => checkpoint.week === 8
+            ? { ...checkpoint, status: "completed", response: "현업활용도 제출 완료" }
+            : checkpoint),
+        };
+        const missionResult = await onSaveMission({
+          ...course,
+          surveys: mergeEntityById(course.surveys, surveyResult.survey),
+        }, updatedMission);
+        if (!missionResult.ok) {
+          setView("home");
+          notify("설문은 저장됐지만 미션 완료 상태를 반영하지 못했습니다. 다시 입장해 확인해 주세요.");
+          return;
+        }
+      }
+      setView("home");
+      notify("현업 적용도 응답을 완료했습니다.");
+    } finally {
+      outcomePendingRef.current = false;
+      setOutcomePending(false);
+    }
   };
 
   const submitRoleplay = () => {
@@ -1763,17 +1932,32 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
     notify("4단계 보고 훈련을 완료했습니다.");
   };
 
-  const completeCheckpoint = (missionId, week) => {
+  const completeCheckpoint = async (missionId, week) => {
+    if (outcomePendingRef.current) return;
     const response = (checkpointResponses[`${missionId}-${week}`] || "").trim();
     if (!response) return notify("실천 내용이나 어려움을 짧게 작성해주세요.");
-    setCourse((current) => ({
-      ...current,
-      missions: current.missions.map((mission) => mission.id === missionId ? {
-        ...mission,
-        missionCheckpoints: (mission.missionCheckpoints || createMissionCheckpoints()).map((checkpoint) => checkpoint.week === week ? { ...checkpoint, status: "completed", response } : checkpoint),
-      } : mission),
-    }));
-    notify(`${week}주 체크를 완료했습니다.`);
+    const mission = course.missions.find((item) => item.id === missionId);
+    if (!mission) return notify("현업 미션을 찾지 못했습니다. 화면을 새로고침해 주세요.");
+    const updatedMission = {
+      ...mission,
+      missionCheckpoints: (mission.missionCheckpoints || createMissionCheckpoints()).map((checkpoint) => checkpoint.week === week
+        ? { ...checkpoint, status: "completed", response }
+        : checkpoint),
+    };
+    outcomePendingRef.current = true;
+    setOutcomePending(true);
+    try {
+      const result = await onSaveMission(course, updatedMission);
+      if (!result.ok) {
+        notify("체크포인트가 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
+      setCheckpointResponses((current) => ({ ...current, [`${missionId}-${week}`]: "" }));
+      notify(`${week}주 체크를 완료했습니다.`);
+    } finally {
+      outcomePendingRef.current = false;
+      setOutcomePending(false);
+    }
   };
 
   return (
@@ -1839,7 +2023,7 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
       {view === "home" && ["completion", "followupWait", "transfer"].includes(phase) && (
         <StudentReentryCard course={course} student={student} phase={phase} onOpenSurvey={() => setView("survey")} />
       )}
-      {phase !== "active" && <StudentGoalCard goal={myGoal} canWrite={phase === "before"} onWrite={() => setView("goal")} />}
+      {phase !== "active" && <StudentGoalCard goal={myGoal} canWrite={phase === "before"} onWrite={openGoalEditor} />}
       {view === "goal" && (
         <ActionPanel title="나의 목표 세우기" eyebrow="입교 전 목표">
           <p className="helper">몇 가지 질문에 답하면 AI가 ‘나의 교육 목표’로 정리해 드립니다. 이 목표는 수료 때와 교육 2개월 후 다시 확인합니다.</p>
@@ -1866,7 +2050,7 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
             <div className="goal-draft-card">
               <span>AI가 정리한 목표 — 자유롭게 다듬어도 좋아요</span>
               <textarea value={goalDraft} onChange={(e) => setGoalDraft(e.target.value)} aria-label="AI가 정리한 교육 목표 수정" />
-              <div><button className="secondary" onClick={() => setGoalDraft(null)}>다시 답하기</button><button className="primary" onClick={saveGoal}>나의 목표 저장하기</button></div>
+              <div><button disabled={outcomePending} className="secondary" onClick={() => setGoalDraft(null)}>다시 답하기</button><button disabled={outcomePending} className="primary" onClick={saveGoal}>{outcomePending ? "저장 중…" : myGoal ? "수정 내용 저장하기" : "나의 목표 저장하기"}</button></div>
             </div>
           )}
           <button className="goal-cancel" onClick={() => setView("home")}>← 돌아가기</button>
@@ -1938,7 +2122,7 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
               <textarea value={achievementDraft.mission} onChange={(e) => setAchievementDraft({ ...achievementDraft, mission: e.target.value })} aria-label="2주 현업 미션 수정" />
               <MissionElementBadges missionText={achievementDraft.mission} />
               <p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p>
-              <div><button className="secondary" onClick={() => setAchievementDraft(null)}>다시 답하기</button><button className="primary" onClick={saveAchievement}>성찰 저장하기</button></div>
+              <div><button disabled={outcomePending} className="secondary" onClick={() => setAchievementDraft(null)}>다시 답하기</button><button disabled={outcomePending} className="primary" onClick={saveAchievement}>{outcomePending ? "저장 중…" : "성찰 저장하기"}</button></div>
             </div>
           )}
         </ActionPanel>
@@ -1949,7 +2133,7 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
           <div className="survey-notice">
             <b>교육은 아직 끝나지 않았습니다.</b>
             <span>배운 것을 현업에 적용하면서 막힌 점이 있다면 알려주세요. 다음 교육과 지원을 개선하는 데 활용하겠습니다.</span>
-            <small>이 조사는 개인 평가가 아니라, 무엇이 적용을 도왔고 무엇이 막았는지를 배우기 위한 것입니다. 응답 내용은 교수요원에게 실명으로 공개되지 않으며, 분석·보고에는 익명·집계 형태로만 활용됩니다. 단, 재안내와 중복 응답 방지를 위해 제출 여부는 시스템에서 확인될 수 있습니다.</small>
+            <small>이 조사는 개인 평가가 아니라, 무엇이 적용을 도왔고 무엇이 막았는지를 배우기 위한 것입니다. 응답에는 참여자 식별자를 저장하지 않고 반별 집계 정보만 저장하며, 분석·보고에는 익명·집계 형태로만 활용됩니다.</small>
           </div>
           <div className="survey-mission-preview">
             <span className="eyebrow">나의 현업 미션</span>
@@ -1963,7 +2147,7 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
           <div className="barrier-field"><b>6. 현업 적용을 어렵게 한 요인 (복수 선택)</b><p className="theory-caption">전이이론(Baldwin & Ford, 1988)의 업무환경 요인 진단 문항입니다.</p><div>{transferBarriers.map((barrier) => <button key={barrier} className={survey.barriers.includes(barrier) ? "selected" : ""} onClick={() => setSurvey({ ...survey, barriers: survey.barriers.includes(barrier) ? survey.barriers.filter((item) => item !== barrier) : [...survey.barriers, barrier] })}>{barrier}</button>)}</div></div>
           <label className="field"><span>7. 배운 것 중 실제로 업무에 적용한 구체적인 사례를 적어 주세요.</span><textarea value={survey.applied} onChange={(e) => setSurvey({ ...survey, applied: e.target.value })} placeholder="예: 보고 두괄식을 매일 적용 중입니다." /></label>
           <label className="field"><span>8. 적용하면서 겪은 어려움이나 조직에 바라는 지원을 적어 주세요.</span><textarea value={survey.support} onChange={(e) => setSurvey({ ...survey, support: e.target.value })} placeholder="예: 실제 사례로 더 연습할 기회가 필요해요." /></label>
-          <PanelActions onBack={() => setView("home")} onSave={saveSurvey} saveLabel="응답 완료하기" />
+          <PanelActions onBack={() => setView("home")} onSave={saveSurvey} saveLabel={outcomePending ? "저장 중…" : "응답 완료하기"} disabled={outcomePending} />
         </ActionPanel>
       )}
       {view === "mission" && (
@@ -1980,7 +2164,7 @@ function StudentApp({ course, setCourse, onSaveRoundItem, student, ideologyStamp
                 {checkpoint.response && <p>{checkpoint.response}</p>}
                 {checkpoint.status !== "completed" && checkpoint.week < 8 && <>
                   <textarea value={checkpointResponses[`${m.id}-${checkpoint.week}`] || ""} onChange={(e) => setCheckpointResponses({ ...checkpointResponses, [`${m.id}-${checkpoint.week}`]: e.target.value })} placeholder={checkpoint.week === 2 ? "실천한 행동과 결과를 적어주세요." : "실천하면서 어려웠던 점을 적어주세요."} />
-                  <button className="secondary" onClick={() => completeCheckpoint(m.id, checkpoint.week)}>시연용 체크 완료</button>
+                  <button disabled={outcomePending} className="secondary" onClick={() => completeCheckpoint(m.id, checkpoint.week)}>{outcomePending ? "저장 중…" : "시연용 체크 완료"}</button>
                 </>}
                 {checkpoint.status !== "completed" && checkpoint.week === 8 && <small>교육 2개월 후 현업활용도 제출 시 자동 완료됩니다.</small>}
               </article>)}</div>
@@ -2047,7 +2231,7 @@ function StudentGoalCard({ goal, onWrite, canWrite = false, compact = false }) {
         ? canWrite
           ? <button onClick={onWrite}>작성</button>
           : <span className="goal-locked-status">미작성</span>
-        : <button className="goal-summary-toggle" aria-expanded={expanded} aria-controls={detailId} onClick={() => setExpanded((value) => !value)}>{expanded ? "접기" : "더보기"}</button>}
+        : <div className="goal-card-actions"><button className="goal-summary-toggle" aria-expanded={expanded} aria-controls={detailId} onClick={() => setExpanded((value) => !value)}>{expanded ? "접기" : "더보기"}</button>{canWrite && <button onClick={onWrite}>수정</button>}</div>}
     </section>
   );
 }
@@ -2474,7 +2658,7 @@ function PageBack({ onClick }) {
   return <button className="page-back" onClick={onClick} aria-label="이전 화면으로 돌아가기">← 바로 이전</button>;
 }
 
-function ProfessorApp({ course, setCourse, onSaveRound, onBumpReaction, courses, ideologyStamps, setIdeologyStamps, onCreateCourse, onSelectCourse, onUpdateCourse, onArchiveCourse, initialTab, onExit, notify }) {
+function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpReaction, courses, ideologyStamps, setIdeologyStamps, onCreateCourse, onSelectCourse, onUpdateCourse, onArchiveCourse, initialTab, onExit, notify }) {
   const [tab, setTab] = useState(initialTab || "dashboard");
   const [selectedClassFilter, setSelectedClassFilter] = useState(course.classes?.[0]?.id || "class-1");
   const [analysis, setAnalysis] = useState(null);
@@ -2489,8 +2673,10 @@ function ProfessorApp({ course, setCourse, onSaveRound, onBumpReaction, courses,
   const [roundPending, setRoundPending] = useState(false);
   const [pendingReactions, setPendingReactions] = useState(() => new Set());
   const [reactedItems, setReactedItems] = useState(() => new Set());
+  const [reportRefreshStatus, setReportRefreshStatus] = useState("idle");
   const roundPendingRef = useRef(false);
   const pendingReactionsRef = useRef(new Set());
+  const reportExportPendingRef = useRef(false);
   const [newCourse, setNewCourse] = useState({
     type: "ideology",
     name: "",
@@ -2520,6 +2706,18 @@ function ProfessorApp({ course, setCourse, onSaveRound, onBumpReaction, courses,
   }, [course.code, course.roleplayConfig?.scenario, course.roleplayConfig?.difficulty]);
 
   useEffect(() => {
+    if (tab !== "transfer") return undefined;
+    let active = true;
+    setReportRefreshStatus("loading");
+    onReloadCourse(course.code).then((result) => {
+      if (!active) return;
+      setReportRefreshStatus(result.ok ? "ready" : "error");
+      if (!result.ok) notify("전이 리포트 데이터를 다시 불러오지 못했습니다. 연결을 확인해 주세요.");
+    });
+    return () => { active = false; };
+  }, [tab, course.code, onReloadCourse, notify]);
+
+  useEffect(() => {
     setSelectedClassFilter(course.classes?.[0]?.id || "class-1");
     setAnalysis(null);
     roundPendingRef.current = false;
@@ -2538,7 +2736,11 @@ function ProfessorApp({ course, setCourse, onSaveRound, onBumpReaction, courses,
 
   useEffect(() => () => clearTimeout(pushTimer.current), []);
 
-  const navigate = (target) => setTab(target);
+  const selectProfessorTab = (target) => {
+    if (target === "transfer") setReportRefreshStatus("loading");
+    setTab(target);
+  };
+  const navigate = selectProfessorTab;
   const runAnalysis = (kind = "all") => {
     if (!analysisEvidenceCount(filteredCourse)) {
       notify("분석할 교육생 응답이 아직 없습니다.");
@@ -2708,6 +2910,24 @@ function ProfessorApp({ course, setCourse, onSaveRound, onBumpReaction, courses,
     if (await sendFollowupDemoNotification()) notify("교육생 탭에 시연용 알림을 다시 보냈습니다.");
   };
 
+  const exportReport = async (format, classFilter) => {
+    if (reportExportPendingRef.current) return;
+    reportExportPendingRef.current = true;
+    setReportRefreshStatus("loading");
+    try {
+      const result = await onReloadCourse(course.code);
+      if (!result.ok) {
+        setReportRefreshStatus("error");
+        notify("최신 전이 데이터를 불러오지 못해 파일을 내보내지 않았습니다.");
+        return;
+      }
+      setReportRefreshStatus("ready");
+      downloadReport(result.course, format, classFilter);
+    } finally {
+      reportExportPendingRef.current = false;
+    }
+  };
+
   const registerCourse = async () => {
     if (isCreatingCourse) return;
     if (!newCourse.name.trim()) return notify("연간 기수를 구분할 과정명을 입력해주세요.");
@@ -2772,7 +2992,7 @@ function ProfessorApp({ course, setCourse, onSaveRound, onBumpReaction, courses,
   return (
     <>
       {tab !== "create" && <nav className="prof-nav" role="tablist" aria-label="교수요원 운영 메뉴">
-        {professorTabs.map(([id, label]) => <button key={id} ref={tab === id ? activeTabRef : null} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>)}
+        {professorTabs.map(([id, label]) => <button key={id} ref={tab === id ? activeTabRef : null} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => selectProfessorTab(id)}>{label}</button>)}
       </nav>}
       <main className="page professor-page">
         <PageBack onClick={() => tab === "create" || tab === "dashboard" ? onExit() : setTab("dashboard")} />
@@ -2859,13 +3079,17 @@ function ProfessorApp({ course, setCourse, onSaveRound, onBumpReaction, courses,
         {tab === "transfer" && (
           <section className="content-card">
             <SectionTitle eyebrow="교육 이후" title="현업 전이 관리와 성과 내보내기" />
-            <div className="transfer-stats"><Stat label="수료 성찰" value={formatSubmissionCount(filteredCourse.achievements.length, filteredParticipantCount)} /><Stat label="현업활용도 응답" value={formatSubmissionCount(filteredCourse.surveys.length, filteredParticipantCount)} /><Stat label="평균 적용도" value={formatAverageLikert(filteredCourse.surveys)} /></div>
-            <ClassSubmissionSummary course={course} />
-            <TransferReportSummary course={filteredCourse} participantCount={filteredParticipantCount} />
+            {reportRefreshStatus === "loading" && <div className="course-lookup-status is-loading">Supabase에서 최신 목표·미션·설문을 불러오고 있습니다.</div>}
+            {reportRefreshStatus === "error" && <div className="course-lookup-status is-error">최신 전이 데이터 조회에 실패했습니다. 화면을 다시 열거나 새로고침해 주세요.</div>}
+            {reportRefreshStatus === "ready" && <>
+              <div className="transfer-stats"><Stat label="수료 성찰" value={formatSubmissionCount(filteredCourse.achievements.length, filteredParticipantCount)} /><Stat label="현업활용도 응답" value={formatSubmissionCount(filteredCourse.surveys.length, filteredParticipantCount)} /><Stat label="평균 적용도" value={formatAverageLikert(filteredCourse.surveys)} /></div>
+              <ClassSubmissionSummary course={course} />
+              <TransferReportSummary course={filteredCourse} participantCount={filteredParticipantCount} />
+            </>}
             <FollowupPushDemo status={pushStatus} onStart={startPushDemo} onOpen={openFollowupSurveyDemo} />
             <div className="export-row">
               <div><h3>과정 성과 리포트</h3><p>목표·참여·성찰·현업 적용 데이터를 한 번에 내보냅니다.</p></div>
-              <div><button className="secondary" onClick={() => downloadReport(course, "json", "all")}>전체 JSON</button><button className="secondary" onClick={() => downloadReport(course, "csv", "all")}>전체 CSV</button><button className="secondary" onClick={() => downloadReport(course, "json", selectedClassFilter)}>{selectedClass.name} JSON</button><button className="primary" onClick={() => downloadReport(course, "csv", selectedClassFilter)}>{selectedClass.name} CSV</button></div>
+              <div><button disabled={reportRefreshStatus !== "ready"} className="secondary" onClick={() => exportReport("json", "all")}>전체 JSON</button><button disabled={reportRefreshStatus !== "ready"} className="secondary" onClick={() => exportReport("csv", "all")}>전체 CSV</button><button disabled={reportRefreshStatus !== "ready"} className="secondary" onClick={() => exportReport("json", selectedClassFilter)}>{selectedClass.name} JSON</button><button disabled={reportRefreshStatus !== "ready"} className="primary" onClick={() => exportReport("csv", selectedClassFilter)}>{selectedClass.name} CSV</button></div>
             </div>
           </section>
         )}

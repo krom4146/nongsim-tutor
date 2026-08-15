@@ -298,6 +298,7 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .goal-card p { margin: 5px 0 0; line-height: 1.5; font-weight: 700; }
 .goal-card p.muted { color: #c8d6cc; font-weight: 500; }
 .goal-card button { border: 1px solid rgba(255,255,255,.3); background: rgba(255,255,255,.1); color: white; padding: 8px 12px; border-radius: 10px; }
+.goal-card-actions { display: grid; gap: 6px; }
 .goal-card-content { display: grid; gap: 12px; }
 .goal-card-content > div { padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,.12); }
 .goal-card-content > div:last-child { padding-bottom: 0; border-bottom: 0; }
@@ -1048,6 +1049,8 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
   .metric-card { min-height: 142px; }
   .goal-card { grid-template-columns: auto 1fr; padding: 16px; }
   .goal-card button { grid-column: 1 / -1; width: 100%; }
+  .goal-card-actions { grid-column: 1 / -1; display: flex; width: 100%; }
+  .goal-card-actions button { flex: 1; }
   .mission-card { padding: 20px 17px; }
   .mission-card h2 { font-size: 23px; }
   .scenario-grid { grid-template-columns: 1fr; }

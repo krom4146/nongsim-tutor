@@ -11,8 +11,8 @@ import { DATA_MODE, getSupabaseClient } from "./supabaseClient.js";
  * round: id, kind("poll" | "board"), prompt, anonymous, questionIntent,
  *        items[], createdAt
  * roundItem: id, by, text | url, reactions{}, createdAt
- * survey: id, participantId, classId, className, likert[], barriers[],
- *         applied, support, submittedAt (no name: anonymous response content)
+ * survey: id, classId, className, likert[], barriers[], applied, support,
+ *         submittedAt (no name or participantId: anonymous response content)
  * mission: id, participantId, text, elements{when, what, how},
  *          missionCheckpoints[], createdAt
  *
@@ -60,6 +60,36 @@ const ROUND_ITEM_COLUMNS = [
   "url",
   "reactions",
   "created_at",
+].join(",");
+const GOAL_COLUMNS = [
+  "id",
+  "course_code",
+  "participant_id",
+  "name",
+  "class_id",
+  "class_name",
+  "text",
+  "created_at",
+].join(",");
+const MISSION_COLUMNS = [
+  "id",
+  "course_code",
+  "participant_id",
+  "text",
+  "elements",
+  "checkpoints",
+  "created_at",
+].join(",");
+const SURVEY_COLUMNS = [
+  "id",
+  "course_code",
+  "class_id",
+  "class_name",
+  "likert",
+  "barriers",
+  "applied",
+  "support",
+  "submitted_at",
 ].join(",");
 const ACTIVITY_PAYLOAD_PREFIX = "nongsim:v1:";
 const DEFAULT_CLASS_ID = "class-1";
@@ -181,6 +211,104 @@ export function roundItemFromRow(row, round = null) {
   };
 }
 
+export function goalToRow(courseCode, goal) {
+  return {
+    id: goal.id,
+    course_code: courseCode,
+    participant_id: goal.participantId,
+    name: goal.name || null,
+    class_id: goal.classId || null,
+    class_name: goal.className || null,
+    text: goal.text || goal.goalText || "",
+    created_at: goal.createdAt || new Date().toISOString(),
+  };
+}
+
+export function goalFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    courseId: row.course_code,
+    participantId: row.participant_id,
+    name: row.name || "",
+    classId: row.class_id || null,
+    className: row.class_name || (row.class_id ? DEFAULT_CLASS_NAME : "미배정"),
+    text: row.text || "",
+    goalText: row.text || "",
+    createdAt: row.created_at,
+  };
+}
+
+function missionElements(elements = {}) {
+  return {
+    when: typeof elements.when === "string" ? elements.when : "",
+    what: typeof elements.what === "string" ? elements.what : "",
+    how: typeof elements.how === "string" ? elements.how : "",
+  };
+}
+
+export function missionToRow(courseCode, mission) {
+  return {
+    id: mission.id,
+    course_code: courseCode,
+    participant_id: mission.participantId,
+    text: mission.text || mission.missionText || "",
+    elements: missionElements(mission.elements),
+    checkpoints: Array.isArray(mission.missionCheckpoints)
+      ? mission.missionCheckpoints
+      : Array.isArray(mission.checkpoints)
+        ? mission.checkpoints
+        : [],
+    created_at: mission.createdAt || new Date().toISOString(),
+  };
+}
+
+export function missionFromRow(row) {
+  if (!row) return null;
+  const checkpoints = Array.isArray(row.checkpoints) ? row.checkpoints : [];
+  return {
+    id: row.id,
+    courseId: row.course_code,
+    participantId: row.participant_id,
+    text: row.text || "",
+    missionText: row.text || "",
+    elements: missionElements(row.elements),
+    checkpoints,
+    missionCheckpoints: checkpoints,
+    createdAt: row.created_at,
+  };
+}
+
+export function surveyToRow(courseCode, survey) {
+  return {
+    id: survey.id,
+    course_code: courseCode,
+    class_id: survey.classId || null,
+    class_name: survey.className || null,
+    likert: Array.isArray(survey.likert) ? survey.likert : [],
+    barriers: Array.isArray(survey.barriers) ? survey.barriers : [],
+    applied: survey.applied || "",
+    support: survey.support || "",
+    submitted_at: survey.submittedAt || survey.createdAt || new Date().toISOString(),
+  };
+}
+
+export function surveyFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    courseId: row.course_code,
+    classId: row.class_id || null,
+    className: row.class_name || DEFAULT_CLASS_NAME,
+    likert: Array.isArray(row.likert) ? row.likert : [],
+    barriers: Array.isArray(row.barriers) ? row.barriers : [],
+    applied: row.applied || "",
+    support: row.support || "",
+    submittedAt: row.submitted_at,
+    createdAt: row.submitted_at,
+  };
+}
+
 async function getSupabaseActivities(client, courseCodes) {
   const codes = [...new Set((courseCodes || []).filter(Boolean))];
   if (!codes.length) return new Map();
@@ -214,6 +342,73 @@ async function getSupabaseActivities(client, courseCodes) {
     activitiesByCourse.set(round.courseId, mergeById(courseRounds, round));
   });
   return activitiesByCourse;
+}
+
+async function getSupabaseOutcomeData(client, courseCodes) {
+  const codes = [...new Set((courseCodes || []).filter(Boolean))];
+  if (!codes.length) return new Map();
+  const [goalResult, missionResult, surveyResult] = await Promise.all([
+    client
+      .from("goals")
+      .select(GOAL_COLUMNS)
+      .in("course_code", codes)
+      .order("created_at", { ascending: true }),
+    client
+      .from("missions")
+      .select(MISSION_COLUMNS)
+      .in("course_code", codes)
+      .order("created_at", { ascending: true }),
+    client
+      .from("surveys")
+      .select(SURVEY_COLUMNS)
+      .in("course_code", codes)
+      .order("submitted_at", { ascending: true }),
+  ]);
+  if (goalResult.error) throw new Error(errorMessage(goalResult.error));
+  if (missionResult.error) throw new Error(errorMessage(missionResult.error));
+  if (surveyResult.error) throw new Error(errorMessage(surveyResult.error));
+
+  const outcomeByCourse = new Map(codes.map((code) => [code, { goals: [], missions: [], surveys: [] }]));
+  (goalResult.data || []).map(goalFromRow).filter(Boolean).forEach((goal) => {
+    const outcome = outcomeByCourse.get(goal.courseId);
+    if (outcome) outcome.goals = mergeById(outcome.goals, goal);
+  });
+  (missionResult.data || []).map(missionFromRow).filter(Boolean).forEach((mission) => {
+    const outcome = outcomeByCourse.get(mission.courseId);
+    if (outcome) outcome.missions = mergeById(outcome.missions, mission);
+  });
+  (surveyResult.data || []).map(surveyFromRow).filter(Boolean).forEach((survey) => {
+    const outcome = outcomeByCourse.get(survey.courseId);
+    if (outcome) outcome.surveys = mergeById(outcome.surveys, survey);
+  });
+  return outcomeByCourse;
+}
+
+function withOutcomeData(course, outcome = {}) {
+  const goals = outcome.goals || [];
+  const participantById = new Map((course.participants || []).map((participant) => [
+    participant.participantId || participant.id,
+    participant,
+  ]));
+  const goalByParticipantId = new Map(goals.map((goal) => [goal.participantId, goal]));
+  const missions = (outcome.missions || []).map((mission) => {
+    const participant = participantById.get(mission.participantId);
+    const checkpoints = Array.isArray(mission.missionCheckpoints) ? mission.missionCheckpoints : [];
+    return {
+      ...mission,
+      classId: participant?.classId || null,
+      className: participant?.className || "미배정",
+      goalId: goalByParticipantId.get(mission.participantId)?.id,
+      dueDate: course.transferDate,
+      status: checkpoints.length && checkpoints.every((checkpoint) => checkpoint.status === "completed") ? "done" : "assigned",
+    };
+  });
+  return normalizeCourse({
+    ...course,
+    goals,
+    missions,
+    surveys: outcome.surveys || [],
+  });
 }
 
 function courseData(course = {}) {
@@ -318,8 +513,15 @@ export async function getCourse(code) {
     .maybeSingle();
   if (error) throw new Error(errorMessage(error));
   if (!data) return null;
-  const activities = await getSupabaseActivities(clientResult.client, [code]);
-  return { ...courseFromRow(data), rounds: activities.get(code) || [] };
+  const baseCourse = courseFromRow(data);
+  const [activities, outcomes] = await Promise.all([
+    getSupabaseActivities(clientResult.client, [code]),
+    getSupabaseOutcomeData(clientResult.client, [code]),
+  ]);
+  return withOutcomeData(
+    { ...baseCourse, rounds: activities.get(code) || [] },
+    outcomes.get(code),
+  );
 }
 
 export async function getCourses() {
@@ -334,8 +536,15 @@ export async function getCourses() {
     .order("created_at", { ascending: true });
   if (error) throw new Error(errorMessage(error));
   const courses = (data || []).map(courseFromRow).filter(Boolean);
-  const activities = await getSupabaseActivities(clientResult.client, courses.map((course) => course.code));
-  return courses.map((course) => ({ ...course, rounds: activities.get(course.code) || [] }));
+  const courseCodes = courses.map((course) => course.code);
+  const [activities, outcomes] = await Promise.all([
+    getSupabaseActivities(clientResult.client, courseCodes),
+    getSupabaseOutcomeData(clientResult.client, courseCodes),
+  ]);
+  return courses.map((course) => withOutcomeData(
+    { ...course, rounds: activities.get(course.code) || [] },
+    outcomes.get(course.code),
+  ));
 }
 
 async function saveLocalCourse(course) {
@@ -419,6 +628,75 @@ export async function saveRoundItem(course, round, item) {
       .single();
     if (error) return { ok: false, error: errorMessage(error) };
     return { ok: true, item: roundItemFromRow(data, round) };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function saveGoal(course, goal) {
+  if (DATA_MODE === "local") {
+    const savedGoal = { ...goal, courseId: course.code };
+    const result = await saveLocalCourse({ ...course, goals: mergeById(course.goals, savedGoal) });
+    return result.ok ? { ...result, goal: savedGoal } : result;
+  }
+
+  const clientResult = getSupabaseClient();
+  if (!clientResult.ok) return clientResult;
+  try {
+    const { data, error } = await clientResult.client
+      .from("goals")
+      .upsert(goalToRow(course.code, goal), { onConflict: "id" })
+      .select(GOAL_COLUMNS)
+      .single();
+    if (error) return { ok: false, error: errorMessage(error) };
+    return { ok: true, goal: goalFromRow(data) };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function saveMission(course, mission) {
+  if (DATA_MODE === "local") {
+    const savedMission = { ...mission, courseId: course.code };
+    const result = await saveLocalCourse({ ...course, missions: mergeById(course.missions, savedMission) });
+    return result.ok ? { ...result, mission: savedMission } : result;
+  }
+
+  const clientResult = getSupabaseClient();
+  if (!clientResult.ok) return clientResult;
+  try {
+    const { data, error } = await clientResult.client
+      .from("missions")
+      .upsert(missionToRow(course.code, mission), { onConflict: "id" })
+      .select(MISSION_COLUMNS)
+      .single();
+    if (error) return { ok: false, error: errorMessage(error) };
+    return { ok: true, mission: missionFromRow(data) };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function saveSurvey(course, survey) {
+  if (!survey.classId || !survey.className) {
+    return { ok: false, error: "Survey class information is required." };
+  }
+  if (DATA_MODE === "local") {
+    const savedSurvey = { ...survey, courseId: course.code };
+    const result = await saveLocalCourse({ ...course, surveys: mergeById(course.surveys, savedSurvey) });
+    return result.ok ? { ...result, survey: savedSurvey } : result;
+  }
+
+  const clientResult = getSupabaseClient();
+  if (!clientResult.ok) return clientResult;
+  try {
+    const { data, error } = await clientResult.client
+      .from("surveys")
+      .insert(surveyToRow(course.code, survey))
+      .select(SURVEY_COLUMNS)
+      .single();
+    if (error) return { ok: false, error: errorMessage(error) };
+    return { ok: true, survey: surveyFromRow(data) };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
   }
