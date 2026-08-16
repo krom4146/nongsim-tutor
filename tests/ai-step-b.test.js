@@ -157,7 +157,7 @@ async function withServerEnvironment(callback) {
   process.env.OPENAI_MODEL = "fixture-test-model";
   process.env.OPENAI_REASONING_EFFORT = "medium";
   process.env.SUPABASE_URL = "https://fixture-project.supabase.co";
-  delete process.env.OPENAI_IMAGE_DETAIL;
+  process.env.OPENAI_IMAGE_DETAIL = "high";
   try {
     return await callback();
   } finally {
@@ -279,13 +279,13 @@ test("boardAnalysis는 현재 Supabase 공개 board-images URL 한 장만 허용
     const request = AI_TASK_REGISTRY.boardAnalysis.buildOpenAiRequest({
       model: "gpt-5.4-mini",
       reasoningEffort: "medium",
-      imageDetail: null,
+      imageDetail: "high",
       courseCode: normalized.courseCode,
       payload: normalized.payload,
     });
     const imagePart = request.input[1].content.find((part) => part.type === "input_image");
     assert.equal(imagePart.image_url, validBody.payload.imageUrl);
-    assert.equal("detail" in imagePart, false);
+    assert.equal(imagePart.detail, "high");
   });
 });
 

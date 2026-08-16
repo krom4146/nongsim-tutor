@@ -93,6 +93,21 @@ export function buildPollClusterRequest(course, round) {
   };
 }
 
+export function buildBoardAnalysisRequest(course, round, item) {
+  const teamLabel = String(item?.by || "팀").trim();
+  return {
+    task: "boardAnalysis",
+    courseCode: course.code,
+    payload: {
+      classId: item?.classId || round?.classId || null,
+      className: item?.className || round?.className || null,
+      moduleTitle: String(round?.prompt || "").trim(),
+      scopeLabel: teamLabel.endsWith("팀") ? `${teamLabel} 장표` : `${teamLabel} 팀 장표`,
+      imageUrl: String(item?.url || item?.imageUrl || "").trim(),
+    },
+  };
+}
+
 export function requestGoalCohortAnalysis(course, classInfo, options) {
   return requestAI(buildGoalCohortRequest(course, classInfo), options);
 }
@@ -107,4 +122,8 @@ export function requestTransferReport(course, participantCount, classInfo, optio
 
 export function requestPollCluster(course, round, options) {
   return requestAI(buildPollClusterRequest(course, round), options);
+}
+
+export function requestBoardAnalysis(course, round, item, options) {
+  return requestAI(buildBoardAnalysisRequest(course, round, item), options);
 }

@@ -152,6 +152,9 @@ export async function handleAiRequest(req, res, dependencies = {}) {
     }
 
     const config = getServerConfig();
+    if (task === "boardAnalysis" && !config.imageDetail) {
+      throw new SafeHttpError("SERVER_MISCONFIGURED", 500);
+    }
     model = config.model;
     let supabase;
     try {

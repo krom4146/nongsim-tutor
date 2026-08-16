@@ -23,6 +23,7 @@ import { putImage } from "./services/fileStore";
 import {
   AI_MODE,
   getAIConfigurationError,
+  requestBoardAnalysis,
   requestGoalCohortAnalysis,
   requestGoalCompose,
   requestPollCluster,
@@ -527,6 +528,24 @@ function buildPollClusterMock(course, round) {
       inputKey: pollRoundInputKey(round),
     },
     meta: { mode: "mock", source: "mock", persisted: false },
+  };
+}
+
+function buildBoardAnalysisMock(round, item) {
+  const teamLabel = String(item.by || "팀").trim();
+  return {
+    status: "ok",
+    scope: teamLabel.endsWith("팀") ? `${teamLabel} 장표` : `${teamLabel} 팀 장표`,
+    summary: "핵심 주장과 실행 행동이 잘 연결되어 있습니다. 발표 시 실제 현장 사례를 한 가지 덧붙이면 메시지가 더 선명해집니다.",
+    common: ["문제 상황의 핵심이 명료함", "실천 행동 제시"],
+    action: "발표 후 ‘실제 현장에서 가장 어려운 단계’를 질문하세요.",
+    generatedAt: now(),
+    meta: { mode: "mock", source: "mock", persisted: false },
+    analysisScope: {
+      roundId: round.id,
+      itemId: item.id,
+      imageUrl: item.url || item.imageUrl || "",
+    },
   };
 }
 
@@ -2810,6 +2829,11 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
   const [selectedBoardRound, setSelectedBoardRound] = useState("");
   const [expandedBoard, setExpandedBoard] = useState(null);
   const [boardAnalysis, setBoardAnalysis] = useState(null);
+  const [boardAnalysisStatus, setBoardAnalysisStatus] = useState("idle");
+  const [boardAnalysisError, setBoardAnalysisError] = useState("");
+  const boardAnalysisRequestRef = useRef(0);
+  const boardAnalysisPendingRef = useRef(false);
+  const boardAnalysisAbortRef = useRef(null);
   const [roundPending, setRoundPending] = useState(false);
   const [pendingReactions, setPendingReactions] = useState(() => new Set());
   const [reactedItems, setReactedItems] = useState(() => new Set());
@@ -2864,6 +2888,10 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
     analysisAbortRef.current?.abort();
     analysisAbortRef.current = null;
     analysisPendingRef.current = false;
+    boardAnalysisRequestRef.current += 1;
+    boardAnalysisAbortRef.current?.abort();
+    boardAnalysisAbortRef.current = null;
+    boardAnalysisPendingRef.current = false;
     setSelectedClassFilter(course.classes?.[0]?.id || "class-1");
     setAnalysis(null);
     setAnalysisKind("all");
@@ -2871,6 +2899,9 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
     setAnalysisError("");
     setLatestPollAnalysis(null);
     setPollAnalysisStatus("idle");
+    setBoardAnalysis(null);
+    setBoardAnalysisStatus("idle");
+    setBoardAnalysisError("");
     roundPendingRef.current = false;
     pendingReactionsRef.current.clear();
     setRoundPending(false);
@@ -2897,7 +2928,20 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
     analysisAbortRef.current?.abort();
     analysisAbortRef.current = null;
     analysisPendingRef.current = false;
+    boardAnalysisRequestRef.current += 1;
+    boardAnalysisAbortRef.current?.abort();
+    boardAnalysisAbortRef.current = null;
+    boardAnalysisPendingRef.current = false;
   }, []);
+
+  useEffect(() => {
+    if (tab === "board" || !boardAnalysisPendingRef.current) return;
+    boardAnalysisRequestRef.current += 1;
+    boardAnalysisAbortRef.current?.abort();
+    boardAnalysisAbortRef.current = null;
+    boardAnalysisPendingRef.current = false;
+    setBoardAnalysisStatus(boardAnalysis ? "ready" : "idle");
+  }, [tab, boardAnalysis]);
 
   const selectProfessorTab = (target) => {
     if (target === "transfer") setReportRefreshStatus("loading");
@@ -3101,17 +3145,119 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
     }
   };
 
-  const analyzeBoards = (round, item) => {
-    const targetItems = item ? [item] : round.items;
-    if (!targetItems.length) return notify("분석할 장표가 아직 없습니다.");
-    setBoardAnalysis({
-      scope: item ? `${item.by} 팀 장표` : `${round.prompt} 전체 장표`,
-      summary: item
-        ? "핵심 주장과 실행 행동이 잘 연결되어 있습니다. 발표 시 실제 현장 사례를 한 가지 덧붙이면 메시지가 더 선명해집니다."
-        : "전체 팀은 신뢰, 빠른 공유, 조합원 관점을 공통으로 강조했습니다. 팀별 차이는 실행 순서와 보고 방식의 구체성에서 나타납니다.",
-      common: item ? ["문제 상황의 핵심이 명료함", "실천 행동 제시"] : ["조합원 관점", "신속한 공유", "정확한 설명"],
-      action: item ? "발표 후 ‘실제 현장에서 가장 어려운 단계’를 질문하세요." : "공통점이 많은 팀부터 발표하고, 차별적 해결책을 제시한 팀을 마지막에 배치하세요.",
-    });
+  const analyzeBoards = async (round, item) => {
+    if (boardAnalysisPendingRef.current) return false;
+    const requestedItems = item ? [item] : (round.items || []);
+    const targetItems = requestedItems.filter((target) => target.url || target.imageUrl);
+    if (!targetItems.length) {
+      notify("분석할 장표 이미지가 아직 없습니다.");
+      return false;
+    }
+
+    const previousAnalysis = boardAnalysis?.roundId === round.id ? boardAnalysis : null;
+    const requestSequence = ++boardAnalysisRequestRef.current;
+    const controller = new AbortController();
+    boardAnalysisAbortRef.current?.abort();
+    boardAnalysisAbortRef.current = controller;
+    boardAnalysisPendingRef.current = true;
+    setBoardAnalysisStatus("loading");
+    setBoardAnalysisError("");
+
+    if (AI_MODE === "mock") {
+      const results = targetItems.map((target) => ({
+        itemId: target.id,
+        imageUrl: target.url || target.imageUrl,
+        by: target.by || "팀",
+        result: buildBoardAnalysisMock(round, target),
+        stale: false,
+      }));
+      setBoardAnalysis({
+        roundId: round.id,
+        targetMode: item ? "single" : "round",
+        targetItemId: item?.id || null,
+        results,
+      });
+      setBoardAnalysisStatus("ready");
+      boardAnalysisPendingRef.current = false;
+      boardAnalysisAbortRef.current = null;
+      notify("장표별 시연용 분석을 생성했습니다.");
+      return true;
+    }
+
+    const configurationError = getAIConfigurationError();
+    if (configurationError) {
+      setBoardAnalysis(previousAnalysis);
+      setBoardAnalysisStatus("error");
+      setBoardAnalysisError(configurationError);
+      boardAnalysisPendingRef.current = false;
+      boardAnalysisAbortRef.current = null;
+      notify("AI 연결 설정을 확인해 주세요.");
+      return false;
+    }
+
+    const completed = [];
+    const failures = [];
+    for (const target of targetItems) {
+      try {
+        const result = await requestBoardAnalysis(course, round, target, { signal: controller.signal });
+        if (boardAnalysisRequestRef.current !== requestSequence) return false;
+        completed.push({
+          itemId: target.id,
+          imageUrl: target.url || target.imageUrl,
+          by: target.by || "팀",
+          result: {
+            ...result,
+            analysisScope: {
+              roundId: round.id,
+              itemId: target.id,
+              imageUrl: target.url || target.imageUrl,
+            },
+          },
+          stale: false,
+        });
+      } catch (error) {
+        if (boardAnalysisRequestRef.current !== requestSequence || error?.code === "REQUEST_CANCELLED") return false;
+        failures.push({ itemId: target.id, imageUrl: target.url || target.imageUrl, error });
+      }
+    }
+
+    const completedByItem = new Map(completed.map((entry) => [entry.itemId, entry]));
+    const previousByInput = new Map((previousAnalysis?.results || []).map((entry) => [
+      `${entry.itemId}:${entry.imageUrl}`,
+      entry,
+    ]));
+    const results = targetItems.map((target) => {
+      const current = completedByItem.get(target.id);
+      if (current) return current;
+      const previous = previousByInput.get(`${target.id}:${target.url || target.imageUrl}`);
+      return previous ? { ...previous, stale: true } : null;
+    }).filter(Boolean);
+    const missingImageCount = requestedItems.length - targetItems.length;
+    const failedCount = failures.length + missingImageCount;
+    const firstError = failures[0]?.error?.message;
+    const errorMessage = failedCount
+      ? `${failedCount}개 장표를 분석하지 못했습니다.${firstError ? ` ${firstError}` : " 이미지가 저장됐는지 확인해 주세요."}`
+      : "";
+
+    setBoardAnalysis(results.length ? {
+      roundId: round.id,
+      targetMode: item ? "single" : "round",
+      targetItemId: item?.id || null,
+      results,
+    } : previousAnalysis);
+    setBoardAnalysisStatus(failedCount ? "error" : "ready");
+    setBoardAnalysisError(errorMessage);
+    if (failedCount) {
+      notify(item ? "AI 장표 분석을 완료하지 못했습니다." : `${failedCount}개 장표 분석을 완료하지 못했습니다.`);
+    } else {
+      const cacheCount = completed.filter((entry) => entry.result.meta?.source === "cache").length;
+      notify(cacheCount === completed.length
+        ? "저장된 장표 분석 결과를 불러왔습니다."
+        : `${completed.length}개 장표를 실제 AI로 분석했습니다.`);
+    }
+    boardAnalysisPendingRef.current = false;
+    boardAnalysisAbortRef.current = null;
+    return failedCount === 0;
   };
 
   const saveRoleplaySetting = (enabled = true) => {
@@ -3273,12 +3419,19 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
           analysisAbortRef.current?.abort();
           analysisAbortRef.current = null;
           analysisPendingRef.current = false;
+          boardAnalysisRequestRef.current += 1;
+          boardAnalysisAbortRef.current?.abort();
+          boardAnalysisAbortRef.current = null;
+          boardAnalysisPendingRef.current = false;
           setSelectedClassFilter(value);
           setAnalysis(null);
           setAnalysisStatus("idle");
           setAnalysisError("");
           setLatestPollAnalysis(null);
           setPollAnalysisStatus("idle");
+          setBoardAnalysis(null);
+          setBoardAnalysisStatus("idle");
+          setBoardAnalysisError("");
         }} />}
         {tab === "create" && <CourseRegistrationForm value={newCourse} onChange={setNewCourse} onSubmit={registerCourse} isCreating={isCreatingCourse} issuedCode={issuedCode} course={course} courses={courses} onSelectCourse={(selected) => { onSelectCourse(selected); setTab("dashboard"); }} onUpdateCourse={onUpdateCourse} onArchiveCourse={onArchiveCourse} notify={notify} />}
         {tab === "dashboard" && <>
@@ -3314,10 +3467,21 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
               <ProfessorBoardGallery
                 rounds={filteredCourse.rounds.filter((round) => round.kind === "board")}
                 selectedId={selectedBoardRound}
-                onSelect={setSelectedBoardRound}
+                onSelect={(roundId) => {
+                  boardAnalysisRequestRef.current += 1;
+                  boardAnalysisAbortRef.current?.abort();
+                  boardAnalysisAbortRef.current = null;
+                  boardAnalysisPendingRef.current = false;
+                  setSelectedBoardRound(roundId);
+                  setBoardAnalysis(null);
+                  setBoardAnalysisStatus("idle");
+                  setBoardAnalysisError("");
+                }}
                 onExpand={setExpandedBoard}
                 onAnalyze={analyzeBoards}
                 analysis={boardAnalysis}
+                analysisStatus={boardAnalysisStatus}
+                analysisError={boardAnalysisError}
               />
             </>}
           </section>
@@ -4073,17 +4237,22 @@ function JobDistribution({ title, counts }) {
   return <div className="job-distribution"><h3>{title}</h3>{entries.length ? entries.map(([label, count]) => <div key={label}><span>{label}</span><b>{count}명</b><i><em style={{ width: `${count / max * 100}%` }} /></i></div>) : <p>아직 집계 결과가 없습니다.</p>}</div>;
 }
 
-function ProfessorBoardGallery({ rounds, selectedId, onSelect, onExpand, onAnalyze, analysis }) {
+function ProfessorBoardGallery({ rounds, selectedId, onSelect, onExpand, onAnalyze, analysis, analysisStatus = "idle", analysisError = "" }) {
   const selected = rounds.find((round) => round.id === selectedId) || rounds[0];
   if (!rounds.length) return <EmptyState title="아직 생성된 장표 모듈이 없습니다." action="위에서 모듈명을 입력하세요" onClick={() => {}} />;
+  const visibleAnalysis = analysis?.roundId === selected.id ? analysis : null;
+  const retryItem = visibleAnalysis?.targetMode === "single"
+    ? selected.items.find((item) => item.id === visibleAnalysis.targetItemId)
+    : null;
+  const isAnalyzing = analysisStatus === "loading";
   return (
     <div className="prof-board-gallery">
       <div className="board-module-tabs">
         {rounds.map((round) => <button key={round.id} className={selected?.id === round.id ? "active" : ""} onClick={() => onSelect(round.id)}>{round.prompt}<span>{round.items.length}</span></button>)}
       </div>
       <div className="board-gallery-head">
-        <div><h3>{selected.prompt}</h3><p>{selected.description || "교육생이 올린 팀별 장표를 발표하고 분석합니다."}</p></div>
-        <button className="secondary" onClick={() => onAnalyze(selected)}>전체 장표 AI 분석</button>
+        <div><h3>{selected.prompt}</h3><p>{selected.description || "교육생이 올린 팀별 장표를 발표하고 분석합니다."}</p><small>전체 분석도 보안을 위해 장표 이미지를 한 장씩 순서대로 처리합니다.</small></div>
+        <button className="secondary" disabled={!selected.items.length || isAnalyzing} onClick={() => { void onAnalyze(selected); }}>{isAnalyzing ? "분석 중…" : "전체 장표 AI 분석"}</button>
       </div>
       {!selected.items.length ? <div className="board-empty">교육생 장표 업로드를 기다리고 있습니다.</div> : (
         <details className="mobile-details board-list-details"><summary>팀 장표 {selected.items.length}개 보기</summary><div className="board-card-grid">
@@ -4093,19 +4262,32 @@ function ProfessorBoardGallery({ rounds, selectedId, onSelect, onExpand, onAnaly
                 {(item.url || item.imageUrl) ? <img src={item.url || item.imageUrl} alt={`${item.by} 장표`} /> : <div>이미지 없음</div>}
                 <span>전체화면 발표 ↗</span>
               </button>
-              <div><h4>{item.by} <em className="class-tag">{item.className || "1반"}</em></h4><p>{new Date(item.createdAt).toLocaleString("ko-KR")}</p><button className="ghost" onClick={() => onAnalyze(selected, item)}>이 팀 장표 AI 분석</button></div>
+              <div><h4>{item.by} <em className="class-tag">{item.className || "1반"}</em></h4><p>{new Date(item.createdAt).toLocaleString("ko-KR")}</p><button disabled={isAnalyzing} className="ghost" onClick={() => { void onAnalyze(selected, item); }}>{isAnalyzing ? "분석 중…" : "이 팀 장표 AI 분석"}</button></div>
             </article>
           ))}
         </div></details>
       )}
-      {analysis && (
-        <div className="board-ai-analysis">
-          <div className="recommend-head"><div className="ai-symbol">AI</div><div><span className="eyebrow">장표 분석</span><h3>{analysis.scope}</h3></div><ReviewBadge /></div>
-          <p>{analysis.summary}</p>
-          <div>{analysis.common.map((item) => <span key={item}>{item}</span>)}</div>
-          <strong>수업 활용 제안</strong><p>{analysis.action}</p>
-        </div>
-      )}
+      {isAnalyzing && <div className="goal-ai-state is-loading" role="status" aria-live="polite">장표 이미지를 실제 AI로 분석하고 있습니다. 여러 장이면 한 장씩 순서대로 처리합니다.</div>}
+      {analysisStatus === "error" && <div className="goal-ai-state is-error" role="alert"><span>{analysisError || "AI 장표 분석을 완료하지 못했습니다."}{visibleAnalysis?.results.length ? " 이전 정상 분석은 유지합니다." : ""}</span><button className="secondary compact" onClick={() => { void onAnalyze(selected, retryItem || undefined); }}>다시 시도</button></div>}
+      {visibleAnalysis?.results.map((entry) => {
+        const result = entry.result;
+        const baseLabel = result.meta?.mode === "mock"
+          ? "데모 분석(AI 미연결)"
+          : result.meta?.source === "cache" ? "AI 분석 · 캐시" : "실제 AI 분석";
+        const currentItem = selected.items.find((item) => item.id === entry.itemId);
+        const isStale = entry.stale || !currentItem || (currentItem.url || currentItem.imageUrl || "") !== entry.imageUrl;
+        return (
+          <div className="board-ai-analysis" key={`${entry.itemId}:${entry.imageUrl}`}>
+            <div className="recommend-head"><div className="ai-symbol">AI</div><div><span className="eyebrow">{isStale ? `이전 정상 분석 · ${baseLabel}` : baseLabel}</span><h3>{result.scope}</h3></div><ReviewBadge /></div>
+            {result.status === "unreadable" && <p className="ai-result-warning" role="status">장표의 핵심 텍스트를 신뢰할 수 없어 판독 불가로 표시했습니다.</p>}
+            {isStale && <p className="ai-result-warning" role="status">현재 장표 이미지와 일치하지 않는 이전 결과입니다. 다시 분석해 주세요.</p>}
+            {result.warning && <p className="ai-result-warning" role="status">{result.warning.message}</p>}
+            <p>{result.summary}</p>
+            {!!result.common.length && <div>{result.common.map((commonItem) => <span key={commonItem}>{commonItem}</span>)}</div>}
+            <strong>수업 활용 제안</strong><p>{result.action}</p>
+          </div>
+        );
+      })}
     </div>
   );
 }

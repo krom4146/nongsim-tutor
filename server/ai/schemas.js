@@ -438,8 +438,11 @@ export function normalizeBoardAnalysisRequest(value) {
   };
 }
 
-export function projectBoardAnalysisResult(result, _payload, generatedAt) {
-  return withGeneratedAt(result, generatedAt);
+export function projectBoardAnalysisResult(result, payload, generatedAt) {
+  return withGeneratedAt({
+    ...result,
+    scope: payload.scopeLabel,
+  }, generatedAt);
 }
 
 const surveySchema = z.object({

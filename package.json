@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:ai": "node --test tests/ai-step-a.test.js tests/ai-step-b.test.js tests/ai-step-c-goal-compose.test.js tests/ai-step-c-transfer-report.test.js tests/ai-step-c-poll-cluster.test.js"
+    "test:ai": "node --test tests/ai-step-a.test.js tests/ai-step-b.test.js tests/ai-step-c-goal-compose.test.js tests/ai-step-c-transfer-report.test.js tests/ai-step-c-poll-cluster.test.js tests/ai-step-c-board-analysis.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.112.3",
