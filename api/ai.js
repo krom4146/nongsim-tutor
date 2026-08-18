@@ -77,7 +77,10 @@ function findRefusal(response) {
 }
 
 function mapOpenAiError(error) {
-  if (error?.name === "APIConnectionTimeoutError" || error?.name === "AbortError" || error?.code === "ETIMEDOUT") {
+  if (error?.name === "APIConnectionTimeoutError"
+    || error?.name === "APIUserAbortError"
+    || error?.name === "AbortError"
+    || error?.code === "ETIMEDOUT") {
     return new SafeHttpError("TIMEOUT", 504);
   }
   if (error?.name === "LengthFinishReasonError") {
@@ -89,6 +92,12 @@ function mapOpenAiError(error) {
   if (error?.status === 429) {
     const isQuotaError = error?.code === "insufficient_quota" || error?.type === "insufficient_quota";
     return new SafeHttpError(isQuotaError ? "QUOTA_EXCEEDED" : "RATE_LIMITED", 429);
+  }
+  if (error?.status === 401
+    || error?.status === 403
+    || error?.code === "invalid_api_key"
+    || error?.code === "model_not_found") {
+    return new SafeHttpError("SERVER_MISCONFIGURED", 500);
   }
   return new SafeHttpError("UPSTREAM_ERROR", 502);
 }
@@ -110,7 +119,9 @@ function successBody({ data, source, persisted, model, promptVersion, requestId,
 }
 
 export async function handleAiRequest(req, res, dependencies = {}) {
-  const startedAt = Date.now();
+  const now = dependencies.now || Date.now;
+  const logAiEvent = dependencies.logAiEvent || safeLog;
+  const startedAt = now();
   const requestId = randomUUID();
   let task = null;
   let model = null;
@@ -191,7 +202,7 @@ export async function handleAiRequest(req, res, dependencies = {}) {
       if (parsedCache.success) {
         try {
           const data = taskDefinition.projectResult(parsedCache.data, normalized.payload, cached.created_at);
-          safeLog("info", {
+          logAiEvent("info", {
             requestId,
             openAiRequestId: cached.openai_request_id || null,
             task,
@@ -200,7 +211,7 @@ export async function handleAiRequest(req, res, dependencies = {}) {
             source: "cache",
             inputTokens: cached.input_tokens ?? null,
             outputTokens: cached.output_tokens ?? null,
-            durationMs: Date.now() - startedAt,
+            durationMs: now() - startedAt,
           });
           return jsonResponse(res, 200, successBody({
             data,
@@ -290,7 +301,7 @@ export async function handleAiRequest(req, res, dependencies = {}) {
       };
     }
 
-    safeLog("info", {
+    logAiEvent("info", {
       requestId,
       openAiRequestId,
       task,
@@ -300,7 +311,7 @@ export async function handleAiRequest(req, res, dependencies = {}) {
       persisted,
       inputTokens,
       outputTokens,
-      durationMs: Date.now() - startedAt,
+      durationMs: now() - startedAt,
     });
     return jsonResponse(res, 200, successBody({
       data,
@@ -317,13 +328,13 @@ export async function handleAiRequest(req, res, dependencies = {}) {
       : error instanceof RequestSecurityError
         ? new SafeHttpError(error.code, error.code === "PAYLOAD_TOO_LARGE" ? 413 : 422)
         : new SafeHttpError("UPSTREAM_ERROR", 502);
-    safeLog(safeError.status >= 500 ? "error" : "warn", {
+    logAiEvent(safeError.status >= 500 ? "error" : "warn", {
       requestId,
       task,
       model,
       promptVersion,
       errorCode: safeError.code,
-      durationMs: Date.now() - startedAt,
+      durationMs: now() - startedAt,
     });
     return jsonResponse(res, safeError.status, {
       ok: false,

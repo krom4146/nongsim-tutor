@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:outcomes": "node --test tests/outcome-persistence.test.js",
-    "test:ai": "node --test tests/ai-step-a.test.js tests/ai-step-b.test.js tests/ai-step-c-goal-compose.test.js tests/ai-step-c-transfer-report.test.js tests/ai-step-c-poll-cluster.test.js tests/ai-step-c-board-analysis.test.js tests/ai-step-c-report-feedback.test.js tests/ai-step-c-mission-draft.test.js"
+    "test:ai": "node --test tests/ai-step-a.test.js tests/ai-step-b.test.js tests/ai-step-c-goal-compose.test.js tests/ai-step-c-transfer-report.test.js tests/ai-step-c-poll-cluster.test.js tests/ai-step-c-board-analysis.test.js tests/ai-step-c-report-feedback.test.js tests/ai-step-c-mission-draft.test.js tests/ai-step-d.test.js",
+    "test:ai-step-d": "node --test tests/ai-step-d.test.js",
+    "eval:ai-step-d": "node scripts/evaluate-ai-step-d.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.112.3",

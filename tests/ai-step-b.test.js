@@ -53,6 +53,15 @@ function makeGoalOutput(payload) {
   };
 }
 
+function makeGoalComposeOutput(payload) {
+  return {
+    goalText: "보고 첫 문장에 결론과 요청을 먼저 말하는 습관을 만들겠습니다.",
+    focusPoint: "상대가 바로 판단할 수 있도록 핵심을 먼저 정리합니다.",
+    actionMission: "다음 보고에서 결론과 요청사항을 첫 문장에 함께 말하고 확인합니다.",
+    sourceIds: payload.answers.map((answer) => answer.sourceId),
+  };
+}
+
 function makePollOutput(payload) {
   const sourceIds = payload.responses.map((response) => response.sourceId);
   return {
@@ -136,6 +145,7 @@ function makeReportOutput() {
 function makeModelOutput(task, payload) {
   return ({
     goalCohort: makeGoalOutput,
+    goalCompose: makeGoalComposeOutput,
     pollCluster: makePollOutput,
     boardAnalysis: makeBoardOutput,
     transferReport: makeTransferOutput,
@@ -190,7 +200,7 @@ test("등록된 task는 서로 다른 요청·출력 스키마와 promptVersion�
   });
 });
 
-test("18개 비식별 fixture가 task 레지스트리와 공통 API를 직접 통과한다", async () => {
+test("22개 비식별 fixture가 task 레지스트리와 공통 API를 직접 통과한다", async () => {
   await withServerEnvironment(async () => {
     for (const [task, taskFixtures] of Object.entries(fixtures.tasks)) {
       const definition = AI_TASK_REGISTRY[task];
