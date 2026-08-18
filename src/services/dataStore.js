@@ -13,6 +13,8 @@ import { DATA_MODE, getSupabaseClient } from "./supabaseClient.js";
  * roundItem: id, by, text | url, reactions{}, createdAt
  * survey: id, classId, className, likert[], barriers[], applied, support,
  *         submittedAt (no name or participantId: anonymous response content)
+ * achievement: id, participantId, name, classId, className, text, answers[],
+ *              createdAt
  * mission: id, participantId, text, elements{when, what, how},
  *          missionCheckpoints[], createdAt
  *
@@ -69,6 +71,17 @@ const GOAL_COLUMNS = [
   "class_id",
   "class_name",
   "text",
+  "created_at",
+].join(",");
+const ACHIEVEMENT_COLUMNS = [
+  "id",
+  "course_code",
+  "participant_id",
+  "name",
+  "class_id",
+  "class_name",
+  "text",
+  "answers",
   "created_at",
 ].join(",");
 const MISSION_COLUMNS = [
@@ -239,6 +252,35 @@ export function goalFromRow(row) {
   };
 }
 
+export function achievementToRow(courseCode, achievement) {
+  return {
+    id: achievement.id,
+    course_code: courseCode,
+    participant_id: achievement.participantId,
+    name: achievement.name || null,
+    class_id: achievement.classId || null,
+    class_name: achievement.className || null,
+    text: achievement.text || "",
+    answers: Array.isArray(achievement.answers) ? achievement.answers : [],
+    created_at: achievement.createdAt || new Date().toISOString(),
+  };
+}
+
+export function achievementFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    courseId: row.course_code,
+    participantId: row.participant_id,
+    name: row.name || "",
+    classId: row.class_id || null,
+    className: row.class_name || (row.class_id ? DEFAULT_CLASS_NAME : "미배정"),
+    text: row.text || "",
+    answers: Array.isArray(row.answers) ? row.answers : [],
+    createdAt: row.created_at,
+  };
+}
+
 function missionElements(elements = {}) {
   return {
     when: typeof elements.when === "string" ? elements.when : "",
@@ -277,6 +319,20 @@ export function missionFromRow(row) {
     missionCheckpoints: checkpoints,
     createdAt: row.created_at,
   };
+}
+
+export function latestMissionsByParticipant(missions = []) {
+  const latestByParticipant = new Map();
+  (missions || []).filter(Boolean).forEach((mission) => {
+    const key = mission.participantId || mission.id;
+    if (!key) return;
+    const current = latestByParticipant.get(key);
+    if (!current || (mission.createdAt || "").localeCompare(current.createdAt || "") >= 0) {
+      latestByParticipant.set(key, mission);
+    }
+  });
+  return [...latestByParticipant.values()].sort((a, b) =>
+    (a.createdAt || "").localeCompare(b.createdAt || ""));
 }
 
 export function surveyToRow(courseCode, survey) {
@@ -347,10 +403,15 @@ async function getSupabaseActivities(client, courseCodes) {
 async function getSupabaseOutcomeData(client, courseCodes) {
   const codes = [...new Set((courseCodes || []).filter(Boolean))];
   if (!codes.length) return new Map();
-  const [goalResult, missionResult, surveyResult] = await Promise.all([
+  const [goalResult, achievementResult, missionResult, surveyResult] = await Promise.all([
     client
       .from("goals")
       .select(GOAL_COLUMNS)
+      .in("course_code", codes)
+      .order("created_at", { ascending: true }),
+    client
+      .from("achievements")
+      .select(ACHIEVEMENT_COLUMNS)
       .in("course_code", codes)
       .order("created_at", { ascending: true }),
     client
@@ -365,13 +426,18 @@ async function getSupabaseOutcomeData(client, courseCodes) {
       .order("submitted_at", { ascending: true }),
   ]);
   if (goalResult.error) throw new Error(errorMessage(goalResult.error));
+  if (achievementResult.error) throw new Error(errorMessage(achievementResult.error));
   if (missionResult.error) throw new Error(errorMessage(missionResult.error));
   if (surveyResult.error) throw new Error(errorMessage(surveyResult.error));
 
-  const outcomeByCourse = new Map(codes.map((code) => [code, { goals: [], missions: [], surveys: [] }]));
+  const outcomeByCourse = new Map(codes.map((code) => [code, { goals: [], achievements: [], missions: [], surveys: [] }]));
   (goalResult.data || []).map(goalFromRow).filter(Boolean).forEach((goal) => {
     const outcome = outcomeByCourse.get(goal.courseId);
     if (outcome) outcome.goals = mergeById(outcome.goals, goal);
+  });
+  (achievementResult.data || []).map(achievementFromRow).filter(Boolean).forEach((achievement) => {
+    const outcome = outcomeByCourse.get(achievement.courseId);
+    if (outcome) outcome.achievements = mergeById(outcome.achievements, achievement);
   });
   (missionResult.data || []).map(missionFromRow).filter(Boolean).forEach((mission) => {
     const outcome = outcomeByCourse.get(mission.courseId);
@@ -391,7 +457,16 @@ function withOutcomeData(course, outcome = {}) {
     participant,
   ]));
   const goalByParticipantId = new Map(goals.map((goal) => [goal.participantId, goal]));
-  const missions = (outcome.missions || []).map((mission) => {
+  const achievements = (outcome.achievements || []).map((achievement) => {
+    const participant = participantById.get(achievement.participantId);
+    return {
+      ...achievement,
+      name: achievement.name || participant?.name || participant?.studentName || "",
+      classId: achievement.classId || participant?.classId || null,
+      className: achievement.className || participant?.className || "미배정",
+    };
+  });
+  const missions = latestMissionsByParticipant(outcome.missions || []).map((mission) => {
     const participant = participantById.get(mission.participantId);
     const checkpoints = Array.isArray(mission.missionCheckpoints) ? mission.missionCheckpoints : [];
     return {
@@ -406,6 +481,7 @@ function withOutcomeData(course, outcome = {}) {
   return normalizeCourse({
     ...course,
     goals,
+    achievements,
     missions,
     surveys: outcome.surveys || [],
   });
@@ -655,19 +731,66 @@ export async function saveGoal(course, goal) {
   }
 }
 
-export async function saveMission(course, mission) {
+export async function saveAchievement(course, achievement) {
   if (DATA_MODE === "local") {
-    const savedMission = { ...mission, courseId: course.code };
-    const result = await saveLocalCourse({ ...course, missions: mergeById(course.missions, savedMission) });
-    return result.ok ? { ...result, mission: savedMission } : result;
+    const savedAchievement = { ...achievement, courseId: course.code };
+    const result = await saveLocalCourse({
+      ...course,
+      achievements: mergeById(course.achievements, savedAchievement),
+    });
+    return result.ok ? { ...result, achievement: savedAchievement } : result;
   }
 
   const clientResult = getSupabaseClient();
   if (!clientResult.ok) return clientResult;
   try {
     const { data, error } = await clientResult.client
+      .from("achievements")
+      .upsert(achievementToRow(course.code, achievement), { onConflict: "course_code,participant_id" })
+      .select(ACHIEVEMENT_COLUMNS)
+      .single();
+    if (error) return { ok: false, error: errorMessage(error) };
+    return { ok: true, achievement: achievementFromRow(data) };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function saveMission(course, mission) {
+  if (DATA_MODE === "local") {
+    const existingMission = latestMissionsByParticipant(course.missions)
+      .find((item) => item.participantId === mission.participantId);
+    const savedMission = {
+      ...mission,
+      id: existingMission?.id || mission.id,
+      courseId: course.code,
+      createdAt: existingMission?.createdAt || mission.createdAt,
+    };
+    const missions = latestMissionsByParticipant(mergeById(course.missions, savedMission));
+    const result = await saveLocalCourse({ ...course, missions });
+    return result.ok ? { ...result, mission: savedMission } : result;
+  }
+
+  const clientResult = getSupabaseClient();
+  if (!clientResult.ok) return clientResult;
+  try {
+    const { data: existingRows, error: existingError } = await clientResult.client
       .from("missions")
-      .upsert(missionToRow(course.code, mission), { onConflict: "id" })
+      .select("id,created_at")
+      .eq("course_code", course.code)
+      .eq("participant_id", mission.participantId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (existingError) return { ok: false, error: errorMessage(existingError) };
+    const existingMission = existingRows?.[0];
+    const missionRow = missionToRow(course.code, {
+      ...mission,
+      id: existingMission?.id || mission.id,
+      createdAt: existingMission?.created_at || mission.createdAt,
+    });
+    const { data, error } = await clientResult.client
+      .from("missions")
+      .upsert(missionRow, { onConflict: "id" })
       .select(MISSION_COLUMNS)
       .single();
     if (error) return { ok: false, error: errorMessage(error) };

@@ -8,6 +8,7 @@ import {
   getCourse,
   getCourses,
   saveCourse,
+  saveAchievement as saveStoredAchievement,
   saveGoal as saveStoredGoal,
   saveMission as saveStoredMission,
   saveRound,
@@ -163,6 +164,8 @@ const seedCourse = {
 /* ---- inlined from src\utils.js ---- */
 const now = () => new Date().toISOString();
 const uid = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+const stableOutcomeId = (prefix, courseCode, participantId) =>
+  [prefix, courseCode, participantId].map((value) => encodeURIComponent(String(value || "unknown"))).join(":");
 const generateParticipantId = () => uid("p");
 const generateReentryToken = () => Math.random().toString(36).slice(2, 8).toUpperCase().replace(/[OI]/g, "7");
 
@@ -1080,6 +1083,17 @@ function App() {
     return { ...result, mission: savedMission };
   };
 
+  const saveOutcomeAchievement = async (courseSnapshot, achievement) => {
+    const result = await saveStoredAchievement(courseSnapshot, achievement);
+    if (!result.ok) return result;
+    const savedAchievement = { ...achievement, ...result.achievement };
+    applyActivityUpdate(courseSnapshot.code, (current) => ({
+      ...current,
+      achievements: mergeEntityById(current.achievements, savedAchievement),
+    }));
+    return { ...result, achievement: savedAchievement };
+  };
+
   const saveOutcomeSurvey = async (courseSnapshot, survey) => {
     const result = await saveStoredSurvey(courseSnapshot, survey);
     if (!result.ok) return result;
@@ -1593,7 +1607,7 @@ function App() {
       <Header course={course} role={role} onHome={() => setRole(null)} onExit={() => setRole(null)} />
       {DATA_MODE === "supabase" && course && <RealtimeStatus status={realtimeStatus} />}
       {role === "student"
-        ? <StudentApp course={course} setCourse={setCourse} onSaveGoal={saveOutcomeGoal} onSaveMission={saveOutcomeMission} onSaveSurvey={saveOutcomeSurvey} onSaveRoundItem={saveActivityItem} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
+        ? <StudentApp course={course} setCourse={setCourse} onSaveGoal={saveOutcomeGoal} onSaveAchievement={saveOutcomeAchievement} onSaveMission={saveOutcomeMission} onSaveSurvey={saveOutcomeSurvey} onSaveRoundItem={saveActivityItem} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
         : <ProfessorApp course={course || initialCourseRef.current} setCourse={setCourse} onReloadCourse={reloadCourseData} onSaveRound={saveActivityRound} onBumpReaction={changeActivityReaction} courses={courses} ideologyStamps={ideologyStamps} setIdeologyStamps={setIdeologyStamps} onCreateCourse={createRegisteredCourse} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onArchiveCourse={archiveRegisteredCourse} initialTab={course ? professorStartTab : "create"} onExit={() => setRole(null)} notify={setToast} />}
       {toast && <Toast>{toast}</Toast>}
     </div>
@@ -1650,7 +1664,7 @@ function RealtimeStatus({ status }) {
   return <div className={`realtime-status ${state.className}`} role="status" aria-live="polite">{state.text}</div>;
 }
 
-function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey, onSaveRoundItem, student, ideologyStamps, onExit, notify }) {
+function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMission, onSaveSurvey, onSaveRoundItem, student, ideologyStamps, onExit, notify }) {
   const participantId = student?.id || "student-demo";
   const participantName = student?.name || "교육생";
   const myGoal = course.goals.find((goal) => goal.participantId === participantId);
@@ -2014,10 +2028,19 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
     if (phase !== "completion") return notify("수료 성찰은 교육 종료일에만 작성할 수 있습니다.");
     if (!achievementDraft?.summary.trim()) return notify("수료 성찰 내용을 확인해주세요.");
     if (!achievementDraft?.mission.trim()) return notify("현업 미션 내용을 확인해주세요.");
-    const achievement = { id: uid("ach"), participantId, name: participantName, classId, className, text: achievementDraft.summary.trim(), answers: achievementAnswers, createdAt: now() };
+    const achievement = {
+      id: myAchievement?.id || stableOutcomeId("achievement", course.code, participantId),
+      participantId,
+      name: participantName,
+      classId,
+      className,
+      text: achievementDraft.summary.trim(),
+      answers: [...achievementAnswers],
+      createdAt: myAchievement?.createdAt || now(),
+    };
     const missionText = achievementDraft.mission.trim();
     const missionItem = {
-      id: crypto.randomUUID(),
+      id: myMission?.id || stableOutcomeId("mission", course.code, participantId),
       participantId,
       classId,
       className,
@@ -2027,8 +2050,8 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
       elements: missionElementSummary(missionText, achievementDraft.elements),
       dueDate: getTransferDate(course),
       status: "assigned",
-      missionCheckpoints: createMissionCheckpoints(),
-      createdAt: now(),
+      missionCheckpoints: myMission?.missionCheckpoints?.length ? myMission.missionCheckpoints : createMissionCheckpoints(),
+      createdAt: myMission?.createdAt || now(),
     };
     outcomePendingRef.current = true;
     setOutcomePending(true);
@@ -2038,11 +2061,14 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
         notify("현업 미션이 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
         return;
       }
-      setCourse((current) => ({
-        ...current,
-        achievements: [...current.achievements, achievement],
-        missions: mergeEntityById(current.missions, result.mission),
-      }));
+      const achievementResult = await onSaveAchievement({
+        ...course,
+        missions: mergeEntityById(course.missions, result.mission),
+      }, achievement);
+      if (!achievementResult.ok) {
+        notify("현업 미션은 저장됐지만 수료 성찰을 저장하지 못했습니다. 다시 시도해 주세요.");
+        return;
+      }
       setAchievementDraft(null);
       setAchievementAnswers(["", "", ""]);
       setAchievementStep(0);

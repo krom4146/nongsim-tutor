@@ -3,7 +3,7 @@
 -- 이 파일은 현재 DB 구조의 원본 기록입니다.
 -- 프로젝트를 새로 만들 경우 이 파일 전체를 SQL Editor에 붙여넣어 실행하면
 -- 동일한 구조가 복원됩니다.
--- 최종 수정: 2026-08-15 (OpenAI STEP 0)
+-- 최종 수정: 2026-08-18 (수료 성찰 저장·조회 및 미션 중복 방지)
 -- =====================================================================
 
 -- ---------- 1. 테이블 ----------
@@ -82,6 +82,20 @@ create table if not exists missions (
   created_at timestamptz default now()
 );
 
+-- 수료 성찰: 과정·참여자별 1건을 저장하고 재제출 시 같은 행을 갱신한다.
+create table if not exists achievements (
+  id text primary key,
+  course_code text not null references courses(code) on delete cascade,
+  participant_id text not null,
+  name text,
+  class_id text,
+  class_name text,
+  text text not null,
+  answers jsonb default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint achievements_course_participant_key unique (course_code, participant_id)
+);
+
 -- AI 분석 결과·사용량 메타데이터. 원본 프롬프트와 전체 입력 payload는 저장하지 않는다.
 create table if not exists public.ai_analyses (
   id uuid primary key default gen_random_uuid(),
@@ -125,6 +139,7 @@ alter table courses     enable row level security;
 alter table rounds      enable row level security;
 alter table round_items enable row level security;
 alter table goals       enable row level security;
+alter table achievements enable row level security;
 alter table surveys     enable row level security;
 alter table missions    enable row level security;
 alter table public.ai_analyses enable row level security;
@@ -138,6 +153,7 @@ drop policy if exists "demo_all_courses" on courses;
 drop policy if exists "demo_all_rounds" on rounds;
 drop policy if exists "demo_all_round_items" on round_items;
 drop policy if exists "demo_all_goals" on goals;
+drop policy if exists "demo_all_achievements" on achievements;
 drop policy if exists "demo_all_surveys" on surveys;
 drop policy if exists "demo_all_missions" on missions;
 
@@ -152,6 +168,9 @@ drop policy if exists "demo_insert_items" on round_items;
 drop policy if exists "demo_update_items" on round_items;
 drop policy if exists "demo_select_goals" on goals;
 drop policy if exists "demo_insert_goals" on goals;
+drop policy if exists "demo_select_achievements" on achievements;
+drop policy if exists "demo_insert_achievements" on achievements;
+drop policy if exists "demo_update_achievements" on achievements;
 drop policy if exists "demo_select_surveys" on surveys;
 drop policy if exists "demo_insert_surveys" on surveys;
 drop policy if exists "demo_select_missions" on missions;
@@ -172,6 +191,10 @@ create policy "demo_update_items" on round_items for update to anon, authenticat
 
 create policy "demo_select_goals" on goals for select to anon, authenticated using (true);
 create policy "demo_insert_goals" on goals for insert to anon, authenticated with check (true);
+
+create policy "demo_select_achievements" on achievements for select to anon, authenticated using (true);
+create policy "demo_insert_achievements" on achievements for insert to anon, authenticated with check (true);
+create policy "demo_update_achievements" on achievements for update to anon, authenticated using (true) with check (true);
 
 create policy "demo_select_surveys" on surveys for select to anon, authenticated using (true);
 create policy "demo_insert_surveys" on surveys for insert to anon, authenticated with check (true);
@@ -221,6 +244,7 @@ on table
   public.rounds,
   public.round_items,
   public.goals,
+  public.achievements,
   public.missions
 to anon, authenticated;
 
