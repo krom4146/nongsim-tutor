@@ -27,6 +27,7 @@ import {
   requestBoardAnalysis,
   requestGoalCohortAnalysis,
   requestGoalCompose,
+  requestMissionDraft,
   requestPollCluster,
   requestReportFeedback,
   requestTransferReport,
@@ -637,8 +638,28 @@ function buildPersonalizedTransferMission({ goal, achievementAnswers = [], jobRe
   return `이번 주 첫 현업 적용 기회가 생기면, ${topic}와 연결되는 행동 한 가지를 실행하고, 결과를 짧게 기록한다.`;
 }
 
-function missionElementSummary(missionText = DEFAULT_TRANSFER_MISSION) {
+function hasMissionElements(elements) {
+  return [elements?.when, elements?.what, elements?.how]
+    .every((value) => typeof value === "string" && value.trim());
+}
+
+function missionElementSummary(missionText = DEFAULT_TRANSFER_MISSION, preferredElements = null) {
   const text = missionText?.trim() || DEFAULT_TRANSFER_MISSION;
+  if (hasMissionElements(preferredElements)) {
+    return {
+      when: preferredElements.when.trim(),
+      what: preferredElements.what.trim(),
+      how: preferredElements.how.trim(),
+    };
+  }
+  const structured = text.match(/^\[언제\]\s*(.+?)\s*\[무엇을\]\s*(.+?)\s*\[어떻게\]\s*(.+)$/su);
+  if (structured) {
+    return {
+      when: structured[1].trim(),
+      what: structured[2].trim(),
+      how: structured[3].trim(),
+    };
+  }
   if (text.startsWith("다음 민원 응대가 끝난 뒤")) {
     return {
       when: "다음 민원 응대가 끝난 뒤",
@@ -695,8 +716,8 @@ function missionElementSummary(missionText = DEFAULT_TRANSFER_MISSION) {
   };
 }
 
-function MissionElementBadges({ missionText }) {
-  const elements = missionElementSummary(missionText);
+function MissionElementBadges({ missionText, elements: preferredElements }) {
+  const elements = missionElementSummary(missionText, preferredElements);
   return (
     <div className="mission-element-badges" aria-label="현업 미션 3요소">
       <span><b>⏰ 언제</b>{elements.when}</span>
@@ -1679,6 +1700,13 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
   const [achievementStep, setAchievementStep] = useState(0);
   const [achievementAnswers, setAchievementAnswers] = useState(["", "", ""]);
   const [achievementDraft, setAchievementDraft] = useState(null);
+  const [missionDraftStatus, setMissionDraftStatus] = useState("idle");
+  const [missionDraftError, setMissionDraftError] = useState("");
+  const [missionDraftMeta, setMissionDraftMeta] = useState(null);
+  const [missionDraftWarning, setMissionDraftWarning] = useState(null);
+  const missionDraftPendingRef = useRef(false);
+  const missionDraftRequestRef = useRef(0);
+  const missionDraftAbortRef = useRef(null);
   const [survey, setSurvey] = useState({ applied: "", support: "", likert: [0, 0, 0, 0, 0], barriers: [] });
   const [submittedSurvey, setSubmittedSurvey] = useState(null);
   const [followupDemoNotification, setFollowupDemoNotification] = useState(null);
@@ -1723,6 +1751,22 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
 
   useEffect(() => () => {
     studentRoleplayAbortRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    if (view === "achievement") return;
+    missionDraftRequestRef.current += 1;
+    missionDraftAbortRef.current?.abort();
+    missionDraftAbortRef.current = null;
+    missionDraftPendingRef.current = false;
+    setMissionDraftStatus("idle");
+    setMissionDraftError("");
+    setMissionDraftMeta(null);
+    setMissionDraftWarning(null);
+  }, [view, course.code]);
+
+  useEffect(() => () => {
+    missionDraftAbortRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -1797,6 +1841,17 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
     setGoalComposeError("");
     setGoalComposeMeta(null);
     setGoalComposeWarning(null);
+  };
+
+  const resetMissionDraft = () => {
+    missionDraftRequestRef.current += 1;
+    missionDraftAbortRef.current?.abort();
+    missionDraftAbortRef.current = null;
+    missionDraftPendingRef.current = false;
+    setMissionDraftStatus("idle");
+    setMissionDraftError("");
+    setMissionDraftMeta(null);
+    setMissionDraftWarning(null);
   };
 
   const openGoalEditor = () => {
@@ -1958,6 +2013,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
     if (outcomePendingRef.current) return;
     if (phase !== "completion") return notify("수료 성찰은 교육 종료일에만 작성할 수 있습니다.");
     if (!achievementDraft?.summary.trim()) return notify("수료 성찰 내용을 확인해주세요.");
+    if (!achievementDraft?.mission.trim()) return notify("현업 미션 내용을 확인해주세요.");
     const achievement = { id: uid("ach"), participantId, name: participantName, classId, className, text: achievementDraft.summary.trim(), answers: achievementAnswers, createdAt: now() };
     const missionText = achievementDraft.mission.trim();
     const missionItem = {
@@ -1968,7 +2024,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
       goalId: myGoal?.id,
       text: missionText,
       missionText,
-      elements: missionElementSummary(missionText),
+      elements: missionElementSummary(missionText, achievementDraft.elements),
       dueDate: getTransferDate(course),
       status: "assigned",
       missionCheckpoints: createMissionCheckpoints(),
@@ -1990,6 +2046,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
       setAchievementDraft(null);
       setAchievementAnswers(["", "", ""]);
       setAchievementStep(0);
+      resetMissionDraft();
       setView("home");
       notify("수료 성찰과 현업 미션이 생성되었습니다.");
     } finally {
@@ -1998,13 +2055,82 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
     }
   };
 
-  const composeAchievement = () => {
-    if (!achievementAnswers[achievementStep].trim()) return notify("질문에 대한 답변을 작성해주세요.");
-    const missionText = buildPersonalizedTransferMission({ goal: myGoal, achievementAnswers, jobReflection: myLatestJobReflection, studentName: participantName });
-    setAchievementDraft({
-      summary: `교육 전 목표를 기준으로 돌아보면 “${achievementAnswers[0].trim()}”라는 변화가 있었습니다. 앞으로 “${achievementAnswers[1].trim()}” 부분을 더 연습하겠습니다.`,
-      mission: missionText,
-    });
+  const composeAchievement = async () => {
+    if (missionDraftPendingRef.current) return;
+    const normalizedAnswers = achievementAnswers.map((answer) => answer.trim());
+    if (normalizedAnswers.some((answer) => !answer)) return notify("세 질문에 대한 답변을 모두 작성해주세요.");
+    const summary = `교육 전 목표를 기준으로 돌아보면 “${normalizedAnswers[0]}”라는 변화가 있었습니다. 앞으로 “${normalizedAnswers[1]}” 부분을 더 연습하겠습니다.`;
+
+    if (AI_MODE === "mock") {
+      const missionText = buildPersonalizedTransferMission({
+        goal: myGoal,
+        achievementAnswers: normalizedAnswers,
+        jobReflection: myLatestJobReflection,
+        studentName: participantName,
+      });
+      setAchievementDraft({
+        summary,
+        mission: missionText,
+        elements: missionElementSummary(missionText),
+      });
+      setMissionDraftStatus("success");
+      setMissionDraftError("");
+      setMissionDraftMeta({ mode: "mock", source: "mock", persisted: false });
+      setMissionDraftWarning(null);
+      return;
+    }
+
+    const configurationError = getAIConfigurationError();
+    if (configurationError) {
+      setMissionDraftStatus("error");
+      setMissionDraftError(configurationError);
+      setMissionDraftMeta(null);
+      setMissionDraftWarning(null);
+      notify("AI 연결 설정을 확인해 주세요.");
+      return;
+    }
+
+    const requestSequence = ++missionDraftRequestRef.current;
+    const controller = new AbortController();
+    missionDraftAbortRef.current?.abort();
+    missionDraftAbortRef.current = controller;
+    missionDraftPendingRef.current = true;
+    setMissionDraftStatus("loading");
+    setMissionDraftError("");
+    setMissionDraftMeta(null);
+    setMissionDraftWarning(null);
+
+    try {
+      const result = await requestMissionDraft(
+        course,
+        myGoal,
+        normalizedAnswers,
+        myLatestJobReflection,
+        { signal: controller.signal },
+      );
+      if (missionDraftRequestRef.current !== requestSequence) return;
+      setAchievementDraft({
+        summary,
+        mission: result.missionText,
+        elements: missionElementSummary(result.missionText, result.elements || result),
+      });
+      setMissionDraftMeta(result.meta);
+      setMissionDraftWarning(result.warning);
+      setMissionDraftStatus("success");
+      notify(result.meta?.source === "cache"
+        ? "저장된 AI 현업 미션을 불러왔습니다."
+        : "수료 성찰을 바탕으로 AI 현업 미션을 생성했습니다.");
+    } catch (error) {
+      if (missionDraftRequestRef.current !== requestSequence || error?.code === "REQUEST_CANCELLED") return;
+      setMissionDraftStatus("error");
+      setMissionDraftError(error?.message || "AI가 현업 미션을 생성하지 못했습니다. 다시 시도해 주세요.");
+      notify("AI 현업 미션을 생성하지 못했습니다.");
+    } finally {
+      if (missionDraftRequestRef.current === requestSequence) {
+        missionDraftPendingRef.current = false;
+        missionDraftAbortRef.current = null;
+      }
+    }
   };
 
   const saveSurvey = async () => {
@@ -2314,23 +2440,27 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
               <div className="goal-progress">{achievementQuestions.map((_, index) => <i key={index} className={index <= achievementStep ? "active" : ""} />)}</div>
               <span>질문 {achievementStep + 1} / {achievementQuestions.length}</span>
               <h3>{achievementQuestions[achievementStep]}</h3>
-              <textarea value={achievementAnswers[achievementStep]} onChange={(e) => setAchievementAnswers(achievementAnswers.map((item, index) => index === achievementStep ? e.target.value : item))} placeholder="자유롭게 적어 주세요" aria-label={`수료 성찰 질문 ${achievementStep + 1} 답변`} />
+              <textarea disabled={missionDraftStatus === "loading"} value={achievementAnswers[achievementStep]} onChange={(e) => setAchievementAnswers(achievementAnswers.map((item, index) => index === achievementStep ? e.target.value : item))} placeholder="자유롭게 적어 주세요" aria-label={`수료 성찰 질문 ${achievementStep + 1} 답변`} />
               <div className="goal-wizard-actions">
-                {achievementStep > 0 && <button className="secondary" onClick={() => setAchievementStep(achievementStep - 1)}>이전</button>}
+                {achievementStep > 0 && <button className="secondary" disabled={missionDraftStatus === "loading"} onClick={() => setAchievementStep(achievementStep - 1)}>이전</button>}
                 {achievementStep < achievementQuestions.length - 1
                   ? <button className="primary" disabled={!achievementAnswers[achievementStep].trim()} onClick={() => setAchievementStep(achievementStep + 1)}>다음</button>
-                  : <button className="gold-button" disabled={!achievementAnswers[achievementStep].trim()} onClick={composeAchievement}>AI로 정리하기</button>}
+                  : <button className="gold-button" disabled={!achievementAnswers[achievementStep].trim() || missionDraftStatus === "loading"} onClick={() => { void composeAchievement(); }}>{missionDraftStatus === "loading" ? "AI 미션 생성 중…" : "AI로 정리하기"}</button>}
               </div>
+              {missionDraftStatus === "loading" && <div className="goal-ai-state is-loading" role="status" aria-live="polite">목표와 수료 성찰을 바탕으로 현업 미션의 세 요소를 만들고 있습니다.</div>}
+              {missionDraftStatus === "error" && <div className="goal-ai-state is-error" role="alert"><span>{missionDraftError}</span><button className="secondary compact" onClick={() => { void composeAchievement(); }}>다시 시도</button></div>}
             </div>
           ) : (
             <div className="goal-draft-card">
+              <span>{missionDraftMeta?.mode === "mock" ? "데모 분석(AI 미연결)" : missionDraftMeta?.source === "cache" ? "AI 현업 미션 · 캐시" : missionDraftMeta?.mode === "ai" ? "실제 AI 현업 미션" : "저장된 현업 미션"} — 자유롭게 다듬어도 좋아요</span>
+              {missionDraftWarning && <p className="goal-ai-warning" role="status">{missionDraftWarning.message}</p>}
               <span>AI가 정리한 목표 달성도</span>
               <textarea value={achievementDraft.summary} onChange={(e) => setAchievementDraft({ ...achievementDraft, summary: e.target.value })} aria-label="AI가 정리한 목표 달성도 수정" />
               <span>2주 현업 미션</span>
-              <textarea value={achievementDraft.mission} onChange={(e) => setAchievementDraft({ ...achievementDraft, mission: e.target.value })} aria-label="2주 현업 미션 수정" />
-              <MissionElementBadges missionText={achievementDraft.mission} />
+              <textarea value={achievementDraft.mission} onChange={(e) => { const mission = e.target.value; setAchievementDraft({ ...achievementDraft, mission, elements: missionElementSummary(mission) }); }} aria-label="2주 현업 미션 수정" />
+              <MissionElementBadges missionText={achievementDraft.mission} elements={achievementDraft.elements} />
               <p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p>
-              <div><button disabled={outcomePending} className="secondary" onClick={() => setAchievementDraft(null)}>다시 답하기</button><button disabled={outcomePending} className="primary" onClick={saveAchievement}>{outcomePending ? "저장 중…" : "성찰 저장하기"}</button></div>
+              <div><button disabled={outcomePending} className="secondary" onClick={() => { resetMissionDraft(); setAchievementDraft(null); }}>다시 답하기</button><button disabled={outcomePending} className="primary" onClick={saveAchievement}>{outcomePending ? "저장 중…" : "성찰 저장하기"}</button></div>
             </div>
           )}
         </ActionPanel>
@@ -2346,7 +2476,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
           <div className="survey-mission-preview">
             <span className="eyebrow">나의 현업 미션</span>
             <h3>{currentMissionText}</h3>
-            <MissionElementBadges missionText={currentMissionText} />
+            <MissionElementBadges missionText={currentMissionText} elements={myMission?.elements} />
             <p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p>
           </div>
           <div className="likert-survey">{transferQuestions.map((question, questionIndex) => (
@@ -2365,7 +2495,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
             const completed = checkpoints.filter((checkpoint) => checkpoint.status === "completed").length;
             const displayMissionText = m.missionText && m.missionText !== DEFAULT_TRANSFER_MISSION ? m.missionText : currentMissionText;
             return <div className="mission-item" key={m.id}>
-              <span>{m.status === "done" ? "완료" : "진행 중"}</span><h3>{displayMissionText}</h3><MissionElementBadges missionText={displayMissionText} /><p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p><p>현업 미션 진행률 {completed}/{checkpoints.length}</p>
+              <span>{m.status === "done" ? "완료" : "진행 중"}</span><h3>{displayMissionText}</h3><MissionElementBadges missionText={displayMissionText} elements={m.elements} /><p className="theory-caption">좋은 행동계획의 3요소(언제·무엇을·어떻게)를 갖추도록 설계됩니다.</p><p>현업 미션 진행률 {completed}/{checkpoints.length}</p>
               <div className="checkpoint-progress"><i style={{ width: `${completed / checkpoints.length * 100}%` }} /></div>
               <div className="mission-checkpoints">{checkpoints.map((checkpoint) => <article key={checkpoint.week} className={checkpoint.status}>
                 <div><b>{checkpoint.status === "completed" ? "✓" : "□"} {checkpoint.label}</b><span>{checkpoint.status === "completed" ? "완료" : "대기"}</span></div>
@@ -2639,7 +2769,7 @@ function StudentStageReview({ stage, goal, achievement, mission, survey, pollCou
       </div>}
       {stage === "completion" && (achievement ? <>
         <div className="stage-review-grid"><article><span>수료 성찰</span><p>{achievement.text}</p></article><article><span>나의 현업 미션</span><p>{mission?.missionText || "생성된 현업 미션이 없습니다."}</p></article></div>
-        {mission?.missionText && <MissionElementBadges missionText={mission.missionText} />}
+        {mission?.missionText && <MissionElementBadges missionText={mission.missionText} elements={mission.elements} />}
       </> : <div className="board-empty">수료 성찰을 작성하지 않았습니다.</div>)}
       {stage === "transfer" && <div className="stage-review-grid"><article><span>현업활용도 조사</span><p>{survey ? "제출 완료" : "아직 제출하지 않았습니다."}</p></article></div>}
       <button className="secondary" onClick={onBack}>현재 단계로 돌아가기</button>

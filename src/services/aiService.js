@@ -112,6 +112,29 @@ export function isLegacyBoardDataUrl(value) {
   return /^data:/i.test(String(value || "").trim());
 }
 
+export function buildMissionDraftRequest(course, goal, achievementAnswers, jobReflection) {
+  const goalText = String(goal?.goalText || goal?.text || "").trim();
+  const reflectionText = String(jobReflection?.workApplicationPoint || jobReflection?.text || "").trim();
+  const achievementResponses = (achievementAnswers || [])
+    .map((answer, index) => ({
+      sourceId: `mission-ach-${String(index + 1).padStart(2, "0")}`,
+      text: String(answer || "").trim(),
+    }))
+    .filter(({ text }) => text);
+
+  return {
+    task: "missionDraft",
+    courseCode: course.code,
+    payload: {
+      goal: goalText ? { sourceId: "mission-goal-01", text: goalText } : null,
+      achievementResponses,
+      jobReflection: reflectionText
+        ? { sourceId: "mission-reflection-01", text: reflectionText }
+        : null,
+    },
+  };
+}
+
 export function buildReportFeedbackRequest(course, config, reportText, followupQuestions, followupAnswer) {
   const turns = [
     { speaker: "manager", text: String(config?.opening || "").trim() },
@@ -152,6 +175,13 @@ export function requestPollCluster(course, round, options) {
 
 export function requestBoardAnalysis(course, round, item, options) {
   return requestAI(buildBoardAnalysisRequest(course, round, item), options);
+}
+
+export function requestMissionDraft(course, goal, achievementAnswers, jobReflection, options) {
+  return requestAI(
+    buildMissionDraftRequest(course, goal, achievementAnswers, jobReflection),
+    options,
+  );
 }
 
 export function requestReportFeedback(course, config, reportText, followupQuestions, followupAnswer, options) {
