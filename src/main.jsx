@@ -3619,7 +3619,7 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
   };
 
   const professorTabs = [
-    ["dashboard", "관제판"], ["goals", "목표"], ["live", "실시간 질문"], ["board", course.type === "job" ? "직무강의 회고" : "팀 장표"],
+    ["dashboard", "관제판"], ["goals", "목표"], ["achievements", "수료 성찰"], ["live", "실시간 질문"], ["board", course.type === "job" ? "직무강의 회고" : "팀 장표"],
     ...(course.type === "ideology" ? [["stamps", "스탬프 관리"]] : []),
     ...(course.type === "newbie" ? [["roleplay", "보고 훈련"]] : []),
     ["ai", "AI 분석"],
@@ -3678,6 +3678,7 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
           />
         </>}
         {tab === "goals" && <DataList title="입교 전 목표" items={filteredCourse.goals} onAnalyze={() => openAnalysis("goals")} />}
+        {tab === "achievements" && <DataList title="수료 성찰" items={filteredCourse.achievements} />}
         {tab === "live" && (
           <section className="content-card">
             <SectionTitle eyebrow="실시간 참여" title="교육생 질문 생성과 응답 현황" action={<button className="primary compact" disabled={!currentPollRound || analysisPendingRef.current} onClick={() => openAnalysis("poll")}>AI로 묶기</button>} />
@@ -3810,7 +3811,7 @@ function ProfessorDashboard({ course, phase, pollAnalysis, pollAnalysisStatus, p
   }[phase];
   const cards = [
     ["목표 제출", formatSubmissionCount(course.goals.length, course.participantCount), "goals", "등록 인원 기준"],
-    ["수료 성찰", formatSubmissionCount(course.achievements.length, course.participantCount), "goals", "등록 인원 기준"],
+    ["수료 성찰", formatSubmissionCount(course.achievements.length, course.participantCount), "achievements", "등록 인원 기준"],
     ["사후 적용도", formatSubmissionCount(course.surveys.length, course.participantCount), "transfer", "등록 인원 기준"],
     ["질문·게시판", `${questionCount}건`, "live", "교육 중 참여 데이터"],
     ["AI 핵심 주제", clusters ? `${clusters}개` : questionCount ? "분석 대기" : "응답 대기", "ai", clusters ? "응답 기반 주제 묶음" : questionCount ? "AI로 묶기 실행 필요" : "응답 수집 후 분석 가능"],
@@ -4663,7 +4664,7 @@ function AIEvidenceResult({ result, status = "ready", stale = false }) {
 function DataList({ title, items, onAnalyze }) {
   return (
     <section className="content-card">
-      <SectionTitle eyebrow="성과 데이터" title={`${title} ${items.length}건`} action={<button className="primary compact" disabled={!items.length} onClick={onAnalyze}>AI 목표 분석</button>} />
+      <SectionTitle eyebrow="성과 데이터" title={`${title} ${items.length}건`} action={onAnalyze ? <button className="primary compact" disabled={!items.length} onClick={onAnalyze}>AI 목표 분석</button> : undefined} />
       <details className="mobile-details data-list-details"><summary>교육생 응답 {items.length}건 보기</summary><div className="data-list">{items.map((x) => <article key={x.id}><div className="avatar">{(x.name || "익").slice(0, 1)}</div><div><b>{x.name || x.participantId} <em className="class-tag">{x.className || "1반"}</em></b><p>{x.text}</p><span>{new Date(x.createdAt).toLocaleString("ko-KR")}</span></div></article>)}</div></details>
     </section>
   );

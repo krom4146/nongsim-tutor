@@ -58,3 +58,12 @@ test("스키마는 수료 성찰 단일 행·RLS·Data API 권한을 선언한�
   assert.match(schema, /demo_update_achievements/i);
   assert.match(schema, /public\.achievements,[\s\S]*public\.missions[\s\S]*to anon, authenticated/i);
 });
+
+test("교수요원 수료 성찰 카드는 전용 상세 탭으로 이동한다", async () => {
+  const source = await readFile(new URL("../src/main.jsx", import.meta.url), "utf8");
+
+  assert.match(source, /\["achievements",\s*"수료 성찰"\]/);
+  assert.match(source, /tab === "achievements"[^\n]*filteredCourse\.achievements/);
+  assert.match(source, /\["수료 성찰",[^\n]*"achievements",\s*"등록 인원 기준"\]/);
+  assert.doesNotMatch(source, /\["수료 성찰",[^\n]*"goals",\s*"등록 인원 기준"\]/);
+});
