@@ -373,7 +373,9 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .mission-checkpoints article > div span, .mission-checkpoints small { color: var(--muted); font-size: 11px; }
 .mission-checkpoints textarea { min-height: 75px; margin-top: 10px; }
 .mission-checkpoints button { min-height: 38px; margin-top: 7px; }
-.privacy-footer { color: #7d8c82; text-align: center; font-size: 11px; padding: 36px 10px 0; }
+.privacy-footer { display: grid; justify-items: center; gap: 7px; color: #7d8c82; text-align: center; font-size: 11px; padding: 36px 10px 0; }
+.deployment-version { display: block; margin-top: 16px; color: #7d8c82; font-size: 10px; font-weight: 800; letter-spacing: .04em; }
+.privacy-footer .deployment-version { margin-top: 0; }
 .student-phase-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 16px; }
 .student-phase-tabs button { text-align: left; border: 1px solid var(--line); border-radius: 15px; padding: 13px; background: white; color: var(--deep); }
 .student-phase-tabs button > span, .student-phase-tabs button b, .student-phase-tabs button small { display: block; }
@@ -675,6 +677,7 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .board-gallery-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 13px; }
 .board-gallery-head h3 { margin: 0 0 4px; }
 .board-gallery-head p { margin: 0; color: var(--muted); font-size: 12px; }
+.board-storage-warning { margin: -2px 0 13px; padding: 10px 12px; border: 1px solid #e6d3a1; border-radius: 11px; color: #755918; background: #fff9e8; font-size: 11px; font-weight: 800; }
 .board-empty { padding: 45px; text-align: center; color: var(--muted); background: #f5f7f5; border-radius: 14px; }
 .board-card-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .board-card-grid article { overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: white; }
@@ -685,6 +688,7 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .board-card-grid h4, .board-card-grid p { margin: 0; }
 .board-card-grid p { margin-top: 4px; color: var(--muted); font-size: 10px; }
 .board-card-grid .ghost { min-height: 35px; margin-top: 8px; padding: 0; color: var(--green); }
+.board-storage-required { display: inline-flex; min-height: 35px; align-items: center; margin-top: 8px; padding: 0 10px; border-radius: 9px; color: #755918; background: #fff3cf; font-size: 10px; font-weight: 900; }
 .board-ai-analysis { margin-top: 18px; padding: 19px; border: 1px solid #e8dbb9; border-radius: 16px; background: #fffbf0; }
 .board-ai-analysis > p { line-height: 1.6; }
 .board-ai-analysis > div:not(.recommend-head) { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }

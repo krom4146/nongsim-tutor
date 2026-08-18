@@ -108,6 +108,32 @@ export function buildBoardAnalysisRequest(course, round, item) {
   };
 }
 
+export function isLegacyBoardDataUrl(value) {
+  return /^data:/i.test(String(value || "").trim());
+}
+
+export function buildReportFeedbackRequest(course, config, reportText, followupQuestions, followupAnswer) {
+  const turns = [
+    { speaker: "manager", text: String(config?.opening || "").trim() },
+    { speaker: "learner", text: String(reportText || "").trim() },
+    ...(followupQuestions || []).map((question) => ({
+      speaker: "manager",
+      text: String(question || "").trim(),
+    })),
+    { speaker: "learner", text: String(followupAnswer || "").trim() },
+  ].filter((turn) => turn.text);
+
+  return {
+    task: "reportFeedback",
+    courseCode: course.code,
+    payload: {
+      scenario: String(config?.scenario || "").trim(),
+      difficulty: String(config?.difficulty || "").trim(),
+      turns,
+    },
+  };
+}
+
 export function requestGoalCohortAnalysis(course, classInfo, options) {
   return requestAI(buildGoalCohortRequest(course, classInfo), options);
 }
@@ -126,4 +152,11 @@ export function requestPollCluster(course, round, options) {
 
 export function requestBoardAnalysis(course, round, item, options) {
   return requestAI(buildBoardAnalysisRequest(course, round, item), options);
+}
+
+export function requestReportFeedback(course, config, reportText, followupQuestions, followupAnswer, options) {
+  return requestAI(
+    buildReportFeedbackRequest(course, config, reportText, followupQuestions, followupAnswer),
+    options,
+  );
 }

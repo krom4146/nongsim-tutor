@@ -9,6 +9,7 @@ import {
 import { AI_TASK_REGISTRY } from "../server/ai/taskRegistry.js";
 import {
   buildBoardAnalysisRequest,
+  isLegacyBoardDataUrl,
 } from "../src/services/aiService.js";
 
 const course = {
@@ -161,6 +162,11 @@ test("장표 이미지 URL이 바뀌면 캐시 입력 hash도 바뀐다", async 
     }));
     assert.notEqual(createInputHash(first.payload), createInputHash(second.payload));
   });
+});
+
+test("구형 data URL 장표를 Storage 재업로드 대상으로 판정한다", () => {
+  assert.equal(isLegacyBoardDataUrl("data:image/jpeg;base64,fixture"), true);
+  assert.equal(isLegacyBoardDataUrl(item.url), false);
 });
 
 test("boardAnalysis live 결과를 저장하고 같은 장표는 cache로 재사용한다", async () => {

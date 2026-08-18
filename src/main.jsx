@@ -23,10 +23,12 @@ import { putImage } from "./services/fileStore";
 import {
   AI_MODE,
   getAIConfigurationError,
+  isLegacyBoardDataUrl,
   requestBoardAnalysis,
   requestGoalCohortAnalysis,
   requestGoalCompose,
   requestPollCluster,
+  requestReportFeedback,
   requestTransferReport,
 } from "./services/aiService";
 import {
@@ -37,6 +39,8 @@ import {
 } from "./services/reportExportService";
 
 /* 단일 파일 구조 유지: 기존 내부 모듈 함수와 mock 데이터를 main.jsx 안에 포함합니다. */
+
+const DEPLOY_COMMIT_SHA = typeof __APP_COMMIT_SHA__ === "string" ? __APP_COMMIT_SHA__ : "local";
 
 /* ---- inlined from src\data.js ---- */
 const COURSE_CODE = "NH-2480";
@@ -1556,6 +1560,7 @@ function App() {
               <small>로컬 시연 비밀번호: <b>{ADMIN_PASSWORD}</b></small>
             </div>
           )}
+          <DeploymentVersion />
         </main>
         {toast && <Toast>{toast}</Toast>}
       </div>
@@ -1663,6 +1668,11 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
   const [studentFollowupQuestions, setStudentFollowupQuestions] = useState([]);
   const [studentFollowupAnswer, setStudentFollowupAnswer] = useState("");
   const [studentRoleplayFeedback, setStudentRoleplayFeedback] = useState(null);
+  const [studentRoleplayStatus, setStudentRoleplayStatus] = useState("idle");
+  const [studentRoleplayError, setStudentRoleplayError] = useState("");
+  const studentRoleplayPendingRef = useRef(false);
+  const studentRoleplayRequestRef = useRef(0);
+  const studentRoleplayAbortRef = useRef(null);
   const [checkpointResponses, setCheckpointResponses] = useState({});
   const [outcomePending, setOutcomePending] = useState(false);
   const outcomePendingRef = useRef(false);
@@ -1699,6 +1709,20 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
 
   useEffect(() => () => {
     goalComposeAbortRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    if (view === "roleplay") return;
+    studentRoleplayRequestRef.current += 1;
+    studentRoleplayAbortRef.current?.abort();
+    studentRoleplayAbortRef.current = null;
+    studentRoleplayPendingRef.current = false;
+    setStudentRoleplayStatus("idle");
+    setStudentRoleplayError("");
+  }, [view, course.code]);
+
+  useEffect(() => () => {
+    studentRoleplayAbortRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -2042,10 +2066,53 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
     setStudentRoleplayStep(3);
   };
 
-  const completeRoleplay = () => {
+  const completeRoleplay = async () => {
+    if (studentRoleplayPendingRef.current) return;
     if (!studentFollowupAnswer.trim()) return notify("AI 팀장의 꼬리질문에 답해주세요.");
     const config = course.roleplayConfig;
-    const feedback = buildStructuredReportFeedback(studentRoleplayText.trim(), studentFollowupAnswer.trim());
+    const requestSequence = ++studentRoleplayRequestRef.current;
+    const controller = new AbortController();
+    studentRoleplayAbortRef.current?.abort();
+    studentRoleplayAbortRef.current = controller;
+    studentRoleplayPendingRef.current = true;
+    setStudentRoleplayStatus("loading");
+    setStudentRoleplayError("");
+
+    let feedback;
+    if (AI_MODE === "mock") {
+      feedback = {
+        ...buildStructuredReportFeedback(studentRoleplayText.trim(), studentFollowupAnswer.trim()),
+        meta: { mode: "mock", source: "mock", persisted: false },
+      };
+    } else {
+      const configurationError = getAIConfigurationError();
+      if (configurationError) {
+        setStudentRoleplayStatus("error");
+        setStudentRoleplayError(configurationError);
+        studentRoleplayPendingRef.current = false;
+        studentRoleplayAbortRef.current = null;
+        notify("AI 연결 설정을 확인해 주세요.");
+        return;
+      }
+      try {
+        feedback = await requestReportFeedback(course, {
+          ...config,
+          opening: roleplayOpening(config.scenario),
+        }, studentRoleplayText, studentFollowupQuestions, studentFollowupAnswer, {
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (studentRoleplayRequestRef.current !== requestSequence || error?.code === "REQUEST_CANCELLED") return;
+        setStudentRoleplayStatus("error");
+        setStudentRoleplayError(error?.message || "AI 보고 피드백을 생성하지 못했습니다.");
+        notify("AI 보고 피드백을 생성하지 못했습니다.");
+        studentRoleplayPendingRef.current = false;
+        studentRoleplayAbortRef.current = null;
+        return;
+      }
+    }
+
+    if (studentRoleplayRequestRef.current !== requestSequence) return;
     const training = {
       id: uid("report-training"),
       participantId,
@@ -2062,8 +2129,11 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
     };
     setCourse((current) => ({ ...current, reportTrainings: [...(current.reportTrainings || []), training] }));
     setStudentRoleplayFeedback(feedback);
+    setStudentRoleplayStatus("ready");
+    studentRoleplayPendingRef.current = false;
+    studentRoleplayAbortRef.current = null;
     setStudentRoleplayStep(4);
-    notify("4단계 보고 훈련을 완료했습니다.");
+    notify(feedback.meta?.source === "cache" ? "저장된 AI 보고 피드백을 불러왔습니다." : "4단계 보고 훈련을 완료했습니다.");
   };
 
   const completeCheckpoint = async (missionId, week) => {
@@ -2212,7 +2282,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
           {course.type === "newbie" && course.roleplayConfig?.enabled && course.roleplayConfig.classId === classId && (
             <section className="student-roleplay-card">
               <div><span className="eyebrow">신규직원 개인 훈련</span><h2>AI 보고 훈련</h2><p>{course.roleplayConfig.scenario} · {course.roleplayConfig.difficulty} 난이도</p></div>
-              <button className="primary" onClick={() => { setStudentRoleplayText(""); setStudentFollowupAnswer(""); setStudentFollowupQuestions([]); setStudentRoleplayFeedback(null); setStudentRoleplayStep(1); setView("roleplay"); }}>보고 훈련 시작</button>
+              <button className="primary" onClick={() => { setStudentRoleplayText(""); setStudentFollowupAnswer(""); setStudentFollowupQuestions([]); setStudentRoleplayFeedback(null); setStudentRoleplayStatus("idle"); setStudentRoleplayError(""); setStudentRoleplayStep(1); setView("roleplay"); }}>보고 훈련 시작</button>
             </section>
           )}
         </>
@@ -2229,7 +2299,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveMission, onSaveSurvey
             <textarea value={studentRoleplayText} onChange={(e) => setStudentRoleplayText(e.target.value)} placeholder="30초 안에 보고한다는 마음으로 작성하세요." aria-label="보고 훈련 답변" />
             <button className="primary" onClick={submitRoleplay}>AI 팀장에게 보고하기</button>
           </div>}
-          {studentRoleplayStep === 3 && <div className="roleplay-followup"><span className="eyebrow">AI 팀장 꼬리질문</span>{studentFollowupQuestions.map((question) => <h3 key={question}>“{question}”</h3>)}<textarea value={studentFollowupAnswer} onChange={(e) => setStudentFollowupAnswer(e.target.value)} placeholder="추가 사실, 조치 계획, 요청사항을 포함해 답해주세요." aria-label="AI 팀장 꼬리질문 답변" /><button className="primary" onClick={completeRoleplay}>답변하고 피드백 받기</button></div>}
+          {studentRoleplayStep === 3 && <div className="roleplay-followup" aria-busy={studentRoleplayStatus === "loading"}><span className="eyebrow">AI 팀장 꼬리질문</span>{studentFollowupQuestions.map((question) => <h3 key={question}>“{question}”</h3>)}<textarea disabled={studentRoleplayStatus === "loading"} value={studentFollowupAnswer} onChange={(e) => setStudentFollowupAnswer(e.target.value)} placeholder="추가 사실, 조치 계획, 요청사항을 포함해 답해주세요." aria-label="AI 팀장 꼬리질문 답변" /><button disabled={studentRoleplayStatus === "loading"} className="primary" onClick={() => { void completeRoleplay(); }}>{studentRoleplayStatus === "loading" ? "AI 피드백 생성 중…" : "답변하고 피드백 받기"}</button>{studentRoleplayStatus === "loading" && <div className="goal-ai-state is-loading" role="status" aria-live="polite">전체 보고 대화를 바탕으로 6개 기준 피드백을 생성하고 있습니다.</div>}{studentRoleplayStatus === "error" && <div className="goal-ai-state is-error" role="alert"><span>{studentRoleplayError}</span><button className="secondary compact" onClick={() => { void completeRoleplay(); }}>다시 시도</button></div>}</div>}
           {studentRoleplayStep === 4 && studentRoleplayFeedback && <ReportFeedback feedback={studentRoleplayFeedback} />}
           <PanelActions onBack={() => setView("home")} />
         </ActionPanel>
@@ -3148,9 +3218,12 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
   const analyzeBoards = async (round, item) => {
     if (boardAnalysisPendingRef.current) return false;
     const requestedItems = item ? [item] : (round.items || []);
-    const targetItems = requestedItems.filter((target) => target.url || target.imageUrl);
+    const imageItems = requestedItems.filter((target) => target.url || target.imageUrl);
+    const targetItems = imageItems.filter((target) => !isLegacyBoardDataUrl(target.url || target.imageUrl));
     if (!targetItems.length) {
-      notify("분석할 장표 이미지가 아직 없습니다.");
+      notify(imageItems.length
+        ? "구형 장표는 Storage에 다시 업로드한 뒤 분석해 주세요."
+        : "분석할 장표 이미지가 아직 없습니다.");
       return false;
     }
 
@@ -3232,7 +3305,8 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
       const previous = previousByInput.get(`${target.id}:${target.url || target.imageUrl}`);
       return previous ? { ...previous, stale: true } : null;
     }).filter(Boolean);
-    const missingImageCount = requestedItems.length - targetItems.length;
+    const legacyImageCount = imageItems.length - targetItems.length;
+    const missingImageCount = requestedItems.length - imageItems.length;
     const failedCount = failures.length + missingImageCount;
     const firstError = failures[0]?.error?.message;
     const errorMessage = failedCount
@@ -3253,7 +3327,7 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
       const cacheCount = completed.filter((entry) => entry.result.meta?.source === "cache").length;
       notify(cacheCount === completed.length
         ? "저장된 장표 분석 결과를 불러왔습니다."
-        : `${completed.length}개 장표를 실제 AI로 분석했습니다.`);
+        : `${completed.length}개 장표를 실제 AI로 분석했습니다.${legacyImageCount ? ` 구형 장표 ${legacyImageCount}개는 제외했습니다.` : ""}`);
     }
     boardAnalysisPendingRef.current = false;
     boardAnalysisAbortRef.current = null;
@@ -4240,6 +4314,8 @@ function JobDistribution({ title, counts }) {
 function ProfessorBoardGallery({ rounds, selectedId, onSelect, onExpand, onAnalyze, analysis, analysisStatus = "idle", analysisError = "" }) {
   const selected = rounds.find((round) => round.id === selectedId) || rounds[0];
   if (!rounds.length) return <EmptyState title="아직 생성된 장표 모듈이 없습니다." action="위에서 모듈명을 입력하세요" onClick={() => {}} />;
+  const legacyDataUrlCount = selected.items.filter((item) => isLegacyBoardDataUrl(item.url || item.imageUrl)).length;
+  const analyzableItemCount = selected.items.filter((item) => (item.url || item.imageUrl) && !isLegacyBoardDataUrl(item.url || item.imageUrl)).length;
   const visibleAnalysis = analysis?.roundId === selected.id ? analysis : null;
   const retryItem = visibleAnalysis?.targetMode === "single"
     ? selected.items.find((item) => item.id === visibleAnalysis.targetItemId)
@@ -4252,8 +4328,9 @@ function ProfessorBoardGallery({ rounds, selectedId, onSelect, onExpand, onAnaly
       </div>
       <div className="board-gallery-head">
         <div><h3>{selected.prompt}</h3><p>{selected.description || "교육생이 올린 팀별 장표를 발표하고 분석합니다."}</p><small>전체 분석도 보안을 위해 장표 이미지를 한 장씩 순서대로 처리합니다.</small></div>
-        <button className="secondary" disabled={!selected.items.length || isAnalyzing} onClick={() => { void onAnalyze(selected); }}>{isAnalyzing ? "분석 중…" : "전체 장표 AI 분석"}</button>
+        <button className="secondary" disabled={!analyzableItemCount || isAnalyzing} onClick={() => { void onAnalyze(selected); }}>{isAnalyzing ? "분석 중…" : "전체 장표 AI 분석"}</button>
       </div>
+      {!!legacyDataUrlCount && <p className="board-storage-warning" role="status">구형 장표 {legacyDataUrlCount}개는 AI 분석 전에 Storage 재업로드가 필요합니다.</p>}
       {!selected.items.length ? <div className="board-empty">교육생 장표 업로드를 기다리고 있습니다.</div> : (
         <details className="mobile-details board-list-details"><summary>팀 장표 {selected.items.length}개 보기</summary><div className="board-card-grid">
           {selected.items.map((item) => (
@@ -4262,7 +4339,7 @@ function ProfessorBoardGallery({ rounds, selectedId, onSelect, onExpand, onAnaly
                 {(item.url || item.imageUrl) ? <img src={item.url || item.imageUrl} alt={`${item.by} 장표`} /> : <div>이미지 없음</div>}
                 <span>전체화면 발표 ↗</span>
               </button>
-              <div><h4>{item.by} <em className="class-tag">{item.className || "1반"}</em></h4><p>{new Date(item.createdAt).toLocaleString("ko-KR")}</p><button disabled={isAnalyzing} className="ghost" onClick={() => { void onAnalyze(selected, item); }}>{isAnalyzing ? "분석 중…" : "이 팀 장표 AI 분석"}</button></div>
+              <div><h4>{item.by} <em className="class-tag">{item.className || "1반"}</em></h4><p>{new Date(item.createdAt).toLocaleString("ko-KR")}</p>{isLegacyBoardDataUrl(item.url || item.imageUrl) ? <span className="board-storage-required">Storage 재업로드 필요</span> : <button disabled={isAnalyzing || !(item.url || item.imageUrl)} className="ghost" onClick={() => { void onAnalyze(selected, item); }}>{isAnalyzing ? "분석 중…" : "이 팀 장표 AI 분석"}</button>}</div>
             </article>
           ))}
         </div></details>
@@ -4504,8 +4581,12 @@ function ReportFeedback({ feedback }) {
     requestClarity: "요청사항 명확성",
     attitude: "태도와 표현",
   };
+  const feedbackLabel = feedback.meta?.mode === "mock"
+    ? "데모 분석(AI 미연결)"
+    : feedback.meta?.source === "cache" ? "AI 피드백 · 캐시" : "실제 AI 피드백";
   return <div className="structured-feedback">
-    <div className="recommend-head"><div className="ai-symbol">AI</div><div><span className="eyebrow">보고 피드백</span><h3>6개 기준 진단</h3></div><ReviewBadge /></div>
+    <div className="recommend-head"><div className="ai-symbol">AI</div><div><span className="eyebrow">{feedbackLabel}</span><h3>6개 기준 진단</h3></div><ReviewBadge /></div>
+    {feedback.warning && <p className="ai-result-warning" role="status">{feedback.warning.message}</p>}
     <p>{feedback.summary}</p>
     <div className="report-score-grid">{Object.entries(feedback.scores).map(([key, score]) => <div key={key}><span>{scoreLabels[key]}</span><b>{score}/5</b><i><em style={{ width: `${score * 20}%` }} /></i></div>)}</div>
     <div className="first-fix"><b>가장 먼저 고칠 한 가지</b><p>{feedback.firstFix}</p></div>
@@ -4523,5 +4604,6 @@ function Stat({ label, value }) { return <div className="stat"><span>{label}</sp
 function ReviewBadge() { return <span className="review-badge">교수요원 검토 필요</span>; }
 function EmptyState({ title, description, action, onClick, busy = false, role }) { return <div className="empty" role={role || (busy ? "status" : undefined)} aria-live={busy ? "polite" : undefined} aria-busy={busy || undefined}><div>AI</div><h3>{title}</h3>{description && <p>{description}</p>}{action && onClick && <button className="primary" onClick={onClick}>{action}</button>}</div>; }
 function Toast({ children }) { return <div className="toast" role="status" aria-live="polite" aria-atomic="true">{children}</div>; }
-function PrivacyFooter() { return <footer className="privacy-footer">입장용 이름 외 고객정보·계좌정보·회사기밀 입력 금지 · AI 결과는 교수요원의 검토 후 활용하세요.</footer>; }
+function DeploymentVersion() { return <small className="deployment-version">배포 버전 · {DEPLOY_COMMIT_SHA}</small>; }
+function PrivacyFooter() { return <footer className="privacy-footer"><span>입장용 이름 외 고객정보·계좌정보·회사기밀 입력 금지 · AI 결과는 교수요원의 검토 후 활용하세요.</span><DeploymentVersion /></footer>; }
 createRoot(document.getElementById("root")).render(<App />);
