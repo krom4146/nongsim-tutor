@@ -19,7 +19,11 @@ import {
 } from "./services/dataStore";
 import { seedDemoCourse } from "./services/demoCourseSeed";
 import { DATA_MODE } from "./services/supabaseClient";
-import { subscribeCourse } from "./services/realtimeBridge";
+import {
+  broadcastFollowupDemoNotification,
+  subscribeCourse,
+  subscribeFollowupDemoNotification,
+} from "./services/realtimeBridge";
 import { putImage } from "./services/fileStore";
 import {
   AI_MODE,
@@ -1804,6 +1808,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
       }
     };
     const handleSameTabDemoNotification = (event) => applyDemoNotification(event.detail);
+    const unsubscribeRealtimeNotification = subscribeFollowupDemoNotification(course.code, applyDemoNotification);
     getCollection("demoNotification").then((saved) => {
       const isRecent = saved?.createdAt && Date.now() - new Date(saved.createdAt).getTime() < 5 * 60 * 1000;
       if (isRecent) applyDemoNotification(saved);
@@ -1812,6 +1817,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
     window.addEventListener(FOLLOWUP_DEMO_EVENT, handleSameTabDemoNotification);
     return () => {
       active = false;
+      unsubscribeRealtimeNotification();
       window.removeEventListener("storage", handleDemoNotification);
       window.removeEventListener(FOLLOWUP_DEMO_EVENT, handleSameTabDemoNotification);
     };
@@ -2377,7 +2383,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
         && !(phase === "transfer" && stage === "done")
         && <StudentMissionCard mission={mission} completed={stage === "done"} onAction={mission.target ? () => setView(mission.target) : undefined} />}
       {view === "home" && ["completion", "followupWait", "transfer"].includes(phase) && (
-        <StudentReentryCard course={course} student={student} phase={phase} onOpenSurvey={() => setView("survey")} />
+        <StudentReentryCard course={course} student={student} />
       )}
       {phase !== "active" && <StudentGoalCard goal={myGoal} canWrite={phase === "before"} onWrite={openGoalEditor} />}
       {view === "goal" && (
@@ -2752,18 +2758,17 @@ function StudentMissionCard({ mission, completed, onAction }) {
   );
 }
 
-function StudentReentryCard({ course, student, phase, onOpenSurvey }) {
+function StudentReentryCard({ course, student }) {
   if (!student?.participantCode && !student?.reentryToken) return null;
   return (
     <section className="reentry-card">
       <div>
         <h3>2개월 후 현업활용도 조사</h3>
-        <p>교육 종료 2개월 후 알림으로 다시 안내합니다.<br />알림을 누르면 조사 화면으로 바로 이동합니다.</p>
-        <small>알림 예정일 · {formatKoreanDate(getTransferDate(course))}</small>
-        <small>시연 모드 · 10초 뒤 교육생 화면에 알림을 표시합니다.</small>
-        {phase === "transfer" && (
-          <button className="secondary compact followup-demo-link" onClick={onOpenSurvey}>현업활용도 조사로 이동</button>
-        )}
+        <p>교육 종료 2개월 후 알림으로 조사 참여를 안내합니다.</p>
+        <div className="reentry-card-meta">
+          <small>알림 예정일 · {formatKoreanDate(getTransferDate(course))}</small>
+          <small>시연 모드 · 10초 알림</small>
+        </div>
       </div>
     </section>
   );
@@ -3516,10 +3521,16 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
       createdAt: now(),
       demo: true,
     };
-    const result = await setCollection("demoNotification", payload);
-    if (result.ok) window.dispatchEvent(new CustomEvent(FOLLOWUP_DEMO_EVENT, { detail: payload }));
-    if (!result.ok) notify("시연 알림을 저장하지 못했습니다. 브라우저 저장 공간을 확인해주세요.");
-    return result.ok;
+    const [storageResult, broadcastResult] = await Promise.all([
+      setCollection("demoNotification", payload),
+      broadcastFollowupDemoNotification(course.code, payload),
+    ]);
+    const sent = DATA_MODE === "supabase" ? broadcastResult.ok : storageResult.ok;
+    if (sent) window.dispatchEvent(new CustomEvent(FOLLOWUP_DEMO_EVENT, { detail: payload }));
+    if (!sent) notify(DATA_MODE === "supabase"
+      ? "시연 알림을 전송하지 못했습니다. 실시간 연결을 확인해주세요."
+      : "시연 알림을 저장하지 못했습니다. 브라우저 저장 공간을 확인해주세요.");
+    return sent;
   };
 
   const startPushDemo = () => {

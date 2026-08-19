@@ -825,7 +825,6 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .followup-push-demo p { margin: 0; }
 .followup-demo-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .followup-notification-card { height: auto; min-height: 40px; padding: 10px 12px; white-space: normal; text-align: left; }
-.followup-demo-link { margin-top: 10px; width: fit-content; }
 .student-followup-notification { position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom)); z-index: 200; width: min(420px, calc(100% - 28px)); padding: 16px; border: 1px solid rgba(194,210,140,.72); border-radius: 18px; color: var(--cream-strong); background: radial-gradient(100% 140% at 100% 0%, rgba(138,154,91,.36), transparent 55%), linear-gradient(145deg, var(--forest), var(--forest-deep)); box-shadow: 0 18px 38px rgba(20,40,28,.34); transform: translateX(-50%); animation: notificationUp .3s ease-out; }
 .student-notification-head { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 9px; }
 .student-notification-head b { color: var(--olive-light); }
@@ -833,10 +832,11 @@ input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 4px 
 .student-notification-head button { min-width: 36px; min-height: 36px; padding: 0; border: 0; color: var(--cream-strong); background: transparent; font-size: 20px; }
 .student-followup-notification p { margin: 11px 0 13px; color: var(--cream-text); font-size: 13px; line-height: 1.55; }
 .student-followup-notification > .primary { width: 100%; min-height: 42px; }
-.reentry-card { padding: 18px 20px; }
-.reentry-card h3 { margin: 0 0 6px; font-size: 18px; }
-.reentry-card p { margin: 3px 0; line-height: 1.5; }
-.reentry-card small { display: block; margin-top: 8px; color: var(--muted); }
+.reentry-card { display: block; padding: 13px 16px; }
+.reentry-card h3 { margin: 0 0 4px; font-size: 16px; }
+.reentry-card p { margin: 0; line-height: 1.45; }
+.reentry-card-meta { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 5px; }
+.reentry-card small { display: block; margin-top: 0; color: var(--muted); }
 .followup-demo-status { margin-top: 8px !important; color: #7a6842 !important; font-weight: 800; }
 .followup-demo-status.arrived { color: var(--green) !important; }
 .survey-demo-preview-badge { width: fit-content; margin-bottom: 12px; padding: 7px 10px; border-radius: 999px; color: #775b18; background: #fff0bf; font-size: 11px; font-weight: 900; }
