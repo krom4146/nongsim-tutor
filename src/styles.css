@@ -1899,6 +1899,46 @@ select:focus {
   .realtime-status { top: 66px; }
 }
 
+/* 과정 입장 화면만 넓은 화면에서 데스크톱용 2열로 확장합니다. */
+@media (min-width: 900px) {
+  .main-entry-screen {
+    padding: max(32px, env(safe-area-inset-top)) 32px max(32px, env(safe-area-inset-bottom));
+  }
+  .main-entry-screen .entry-card {
+    width: min(980px, calc(100% - 32px));
+    display: grid;
+    grid-template-columns: minmax(0, .92fr) minmax(380px, 1.08fr);
+    gap: 56px;
+    align-items: center;
+    padding: 42px 48px;
+  }
+  .main-entry-screen .entry-intro {
+    align-self: start;
+    padding-top: 2px;
+  }
+  .main-entry-screen .entry-copy {
+    margin: 52px 0 0;
+  }
+  .main-entry-screen .entry-copy h1 {
+    max-width: 420px;
+    font-size: clamp(38px, 4vw, 52px);
+    line-height: 1.2;
+  }
+  .main-entry-screen .entry-copy p {
+    max-width: 390px;
+    font-size: 14px;
+  }
+  .main-entry-screen .entry-form-panel {
+    min-width: 0;
+  }
+  .main-entry-screen .entry-form-panel > :first-child {
+    margin-top: 0;
+  }
+  .main-entry-screen .entry-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;

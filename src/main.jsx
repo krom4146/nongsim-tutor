@@ -1522,15 +1522,18 @@ function App() {
     return (
       <div className="entry-shell main-entry-screen">
         <main className="entry-card">
-          <Brand />
-          <a className="academy-link" href="https://nh-gurye-edu.vercel.app/" target="_blank" rel="noreferrer" aria-label="농협교육원 통합관리앱 새 창으로 열기">
-            농협교육원 통합관리앱 <span>↗</span>
-          </a>
-          <div className="entry-copy">
-            <span className="eyebrow">AI 교육 평가·전이 관리 에이전트</span>
-            <h1>교육의 순간을<br />현장의 변화로<br />연결합니다.</h1>
-            <p>목표부터 수료 성찰, 2개월 후 현업 적용까지 하나의 데이터 흐름으로 확인하세요.</p>
-          </div>
+          <section className="entry-intro">
+            <Brand />
+            <a className="academy-link" href="https://nh-gurye-edu.vercel.app/" target="_blank" rel="noreferrer" aria-label="농협교육원 통합관리앱 새 창으로 열기">
+              농협교육원 통합관리앱 <span>↗</span>
+            </a>
+            <div className="entry-copy">
+              <span className="eyebrow">AI 교육 평가·전이 관리 에이전트</span>
+              <h1>교육의 순간을<br />현장의 변화로<br />연결합니다.</h1>
+              <p>목표부터 수료 성찰, 2개월 후 현업 적용까지 하나의 데이터 흐름으로 확인하세요.</p>
+            </div>
+          </section>
+          <section className="entry-form-panel" aria-label="과정 입장">
           {courseLoadStatus === "loading" && <div className="course-lookup-status is-loading">등록된 과정을 확인하고 있습니다.</div>}
           {courseLoadStatus === "empty" && <div className="course-lookup-status is-empty">등록된 과정이 없습니다. 교수요원은 관리자 인증 후 새 과정을 등록해 주세요.</div>}
           {courseLoadStatus === "error" && <div className="course-lookup-status is-error">과정 조회에 실패했습니다. 연결과 환경 설정을 확인한 뒤 새로고침해 주세요.</div>}
@@ -1600,6 +1603,7 @@ function App() {
             </div>
           )}
           <DeploymentVersion />
+          </section>
         </main>
         {toast && <Toast>{toast}</Toast>}
       </div>
