@@ -3,7 +3,7 @@
 -- 이 파일은 현재 DB 구조의 원본 기록입니다.
 -- 프로젝트를 새로 만들 경우 이 파일 전체를 SQL Editor에 붙여넣어 실행하면
 -- 동일한 구조가 복원됩니다.
--- 최종 수정: 2026-08-18 (수료 성찰 저장·조회 및 미션 중복 방지)
+-- 최종 수정: 2026-08-19 (직무강의 회고 저장·조회 및 실시간 반영)
 -- =====================================================================
 
 -- ---------- 1. 테이블 ----------
@@ -96,6 +96,26 @@ create table if not exists achievements (
   constraint achievements_course_participant_key unique (course_code, participant_id)
 );
 
+-- 직무강의 회고: 과정·참여자·강의일별 1건. 교육생의 동시 제출은 전용 행으로 분리한다.
+create table if not exists job_reflections (
+  id text primary key,
+  course_code text not null references courses(code) on delete cascade,
+  participant_key text not null,            -- 서버 HMAC. 원본 참여자 식별자는 저장하지 않는다.
+  class_id text not null,
+  class_name text not null,
+  reflection_date date not null,
+  best_session_id text not null,
+  best_reason text not null,
+  best_reason_etc text,
+  improvement_session_id text,
+  improvement_reason text,
+  improvement_reason_etc text,
+  work_application_point text not null,
+  created_at timestamptz not null default now(),
+  constraint job_reflections_course_participant_date_key
+    unique (course_code, participant_key, reflection_date)
+);
+
 -- AI 분석 결과·사용량 메타데이터. 원본 프롬프트와 전체 입력 payload는 저장하지 않는다.
 create table if not exists public.ai_analyses (
   id uuid primary key default gen_random_uuid(),
@@ -130,6 +150,8 @@ create index if not exists idx_items_round on round_items(round_id);
 create index if not exists idx_goals_course on goals(course_code);
 create index if not exists idx_surveys_course on surveys(course_code);
 create index if not exists idx_missions_course on missions(course_code);
+create index if not exists idx_job_reflections_course_date_class
+  on job_reflections(course_code, reflection_date, class_id);
 create index if not exists ai_analyses_course_created_idx
   on public.ai_analyses (course_code, created_at desc);
 
@@ -142,6 +164,7 @@ alter table goals       enable row level security;
 alter table achievements enable row level security;
 alter table surveys     enable row level security;
 alter table missions    enable row level security;
+alter table job_reflections enable row level security;
 alter table public.ai_analyses enable row level security;
 
 -- ---------- 4. 접근 정책 (심사 데모 단계) ----------
@@ -156,6 +179,7 @@ drop policy if exists "demo_all_goals" on goals;
 drop policy if exists "demo_all_achievements" on achievements;
 drop policy if exists "demo_all_surveys" on surveys;
 drop policy if exists "demo_all_missions" on missions;
+drop policy if exists "demo_all_job_reflections" on job_reflections;
 
 drop policy if exists "demo_select_courses" on courses;
 drop policy if exists "demo_insert_courses" on courses;
@@ -176,6 +200,9 @@ drop policy if exists "demo_insert_surveys" on surveys;
 drop policy if exists "demo_select_missions" on missions;
 drop policy if exists "demo_insert_missions" on missions;
 drop policy if exists "demo_update_missions" on missions;
+drop policy if exists "demo_select_job_reflections" on job_reflections;
+drop policy if exists "demo_insert_job_reflections" on job_reflections;
+drop policy if exists "demo_update_job_reflections" on job_reflections;
 
 create policy "demo_select_courses" on courses for select to anon, authenticated using (true);
 create policy "demo_insert_courses" on courses for insert to anon, authenticated with check (true);
@@ -251,6 +278,10 @@ to anon, authenticated;
 grant select, insert
 on table public.surveys
 to anon, authenticated;
+
+-- 자유서술식 회고는 공개 키에서 직접 접근하지 않고 서버 프록시만 사용한다.
+revoke all on table public.job_reflections from anon, authenticated;
+grant select, insert, update on table public.job_reflections to service_role;
 
 -- AI 분석은 서버 전용 secret key가 사용하는 service_role만 접근한다.
 revoke all on table public.ai_analyses from anon, authenticated;

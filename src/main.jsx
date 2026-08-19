@@ -7,9 +7,11 @@ import {
   getCollection,
   getCourse,
   getCourses,
+  getJobReflection as getStoredJobReflection,
   saveCourse,
   saveAchievement as saveStoredAchievement,
   saveGoal as saveStoredGoal,
+  saveJobReflection as saveStoredJobReflection,
   saveMission as saveStoredMission,
   saveRound,
   saveRoundItem,
@@ -32,6 +34,7 @@ import {
   requestBoardAnalysis,
   requestGoalCohortAnalysis,
   requestGoalCompose,
+  requestJobReflectionAnalysis,
   requestMissionDraft,
   requestPollCluster,
   requestReportFeedback,
@@ -1109,6 +1112,17 @@ function App() {
     return { ...result, survey: savedSurvey };
   };
 
+  const saveActivityJobReflection = async (courseSnapshot, reflection) => {
+    const result = await saveStoredJobReflection(courseSnapshot, reflection);
+    if (!result.ok) return result;
+    const savedJobReflection = { ...reflection, ...result.jobReflection };
+    applyActivityUpdate(courseSnapshot.code, (current) => ({
+      ...current,
+      jobReflections: mergeEntityById(current.jobReflections, savedJobReflection),
+    }));
+    return { ...result, jobReflection: savedJobReflection };
+  };
+
   const reloadCourseData = useCallback(async (courseCode) => {
     try {
       const nextCourse = await getCourse(courseCode);
@@ -1615,7 +1629,7 @@ function App() {
       <Header course={course} role={role} onHome={() => setRole(null)} onExit={() => setRole(null)} />
       {DATA_MODE === "supabase" && course && <RealtimeStatus status={realtimeStatus} />}
       {role === "student"
-        ? <StudentApp course={course} setCourse={setCourse} onSaveGoal={saveOutcomeGoal} onSaveAchievement={saveOutcomeAchievement} onSaveMission={saveOutcomeMission} onSaveSurvey={saveOutcomeSurvey} onSaveRoundItem={saveActivityItem} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
+        ? <StudentApp course={course} setCourse={setCourse} onSaveGoal={saveOutcomeGoal} onSaveAchievement={saveOutcomeAchievement} onSaveMission={saveOutcomeMission} onSaveSurvey={saveOutcomeSurvey} onSaveRoundItem={saveActivityItem} onSaveJobReflection={saveActivityJobReflection} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
         : <ProfessorApp course={course || initialCourseRef.current} setCourse={setCourse} onReloadCourse={reloadCourseData} onSaveRound={saveActivityRound} onBumpReaction={changeActivityReaction} courses={courses} ideologyStamps={ideologyStamps} setIdeologyStamps={setIdeologyStamps} onCreateCourse={createRegisteredCourse} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onArchiveCourse={archiveRegisteredCourse} initialTab={course ? professorStartTab : "create"} onExit={() => setRole(null)} notify={setToast} />}
       {toast && <Toast>{toast}</Toast>}
     </div>
@@ -1672,14 +1686,15 @@ function RealtimeStatus({ status }) {
   return <div className={`realtime-status ${state.className}`} role="status" aria-live="polite">{state.text}</div>;
 }
 
-function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMission, onSaveSurvey, onSaveRoundItem, student, ideologyStamps, onExit, notify }) {
+function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMission, onSaveSurvey, onSaveRoundItem, onSaveJobReflection, student, ideologyStamps, onExit, notify }) {
   const participantId = student?.id || "student-demo";
   const participantName = student?.name || "교육생";
+  const [personalJobReflection, setPersonalJobReflection] = useState(null);
   const myGoal = course.goals.find((goal) => goal.participantId === participantId);
   const myAchievement = course.achievements.find((item) => item.participantId === participantId);
   const participantSurvey = course.surveys.find((item) => item.participantId === participantId);
   const myMission = course.missions.find((item) => item.participantId === participantId);
-  const myLatestJobReflection = [...(course.jobReflections || [])]
+  const myLatestJobReflection = personalJobReflection || [...(course.jobReflections || [])]
     .filter((item) => item.participantId === participantId)
     .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
   const personalizedMissionText = buildPersonalizedTransferMission({ goal: myGoal, jobReflection: myLatestJobReflection, studentName: participantName });
@@ -1736,7 +1751,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
   const mySurvey = participantSurvey || submittedSurvey;
   const phase = getCoursePhase(course);
   const [phaseTab, setPhaseTab] = useState(phase);
-  const todayReflection = (course.jobReflections || []).some((item) => item.participantId === participantId && item.date === todayInKorea());
+  const todayReflection = myLatestJobReflection?.date === todayInKorea();
   const myBoardComplete = boardRounds.length > 0 && boardRounds.every((round) => round.items.some((item) => item.participantId === participantId));
   const myRoleplayComplete = (course.reportTrainings || []).some((item) => item.participantId === participantId);
 
@@ -1744,6 +1759,24 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
     setPhaseTab(phase);
     setView("home");
   }, [phase, course.code]);
+
+  useEffect(() => {
+    let active = true;
+    setPersonalJobReflection(null);
+    if (course.type !== "job" || !participantId) return () => { active = false; };
+    getStoredJobReflection(course.code, participantId).then((result) => {
+      if (!active) return;
+      if (result.ok) setPersonalJobReflection((current) => current || result.jobReflection || null);
+      else console.error("나의 직무강의 회고 조회 실패", result.error);
+    });
+    return () => { active = false; };
+  }, [course.code, course.type, participantId]);
+
+  const savePersonalJobReflection = async (courseSnapshot, reflection) => {
+    const result = await onSaveJobReflection(courseSnapshot, reflection);
+    if (result.ok) setPersonalJobReflection(result.jobReflection);
+    return result;
+  };
 
   useEffect(() => {
     if (view === "goal") return;
@@ -2439,7 +2472,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
       {phase === "active" && view === "home" && (
         <>
           {course.type === "job"
-            ? <StudentJobReflection course={course} setCourse={setCourse} student={student} notify={notify} />
+            ? <StudentJobReflection course={course} existingReflection={myLatestJobReflection} onSave={savePersonalJobReflection} student={student} notify={notify} />
             : <StudentBoardArea rounds={boardRounds} course={course} onSaveRoundItem={onSaveRoundItem} student={student} notify={notify} />}
           {course.type === "newbie" && course.roleplayConfig?.enabled && course.roleplayConfig.classId === classId && (
             <section className="student-roleplay-card">
@@ -2843,15 +2876,18 @@ function StudentPhaseTabs({ phase, selected, transferDate, onSelect }) {
   );
 }
 
-function StudentJobReflection({ course, setCourse, student, notify }) {
+function StudentJobReflection({ course, existingReflection, onSave, student, notify }) {
   const participantId = student?.id || "student-demo";
   const participantName = student?.name || "교육생";
   const classId = student?.classId || "class-1";
   const className = student?.className || "1반";
   const date = todayInKorea();
   const sessions = (course.jobSessions || []).filter((session) => session.date === date && session.classId === classId).sort((a, b) => a.startTime.localeCompare(b.startTime));
-  const mine = (course.jobReflections || []).find((item) => item.participantId === participantId && item.date === date);
+  const [savedReflection, setSavedReflection] = useState(null);
+  const mine = [savedReflection, existingReflection, ...(course.jobReflections || [])]
+    .find((item) => item?.participantId === participantId && item.date === date);
   const [step, setStep] = useState(1);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     bestSessionId: "",
     bestReason: "",
@@ -2861,18 +2897,18 @@ function StudentJobReflection({ course, setCourse, student, notify }) {
     improvementReasonEtc: "",
     workApplicationPoint: "",
   });
-  const save = () => {
+  const save = async () => {
     if (!form.bestSessionId || !form.bestReason) return notify("현업에 가장 도움이 된 강의와 이유를 선택해주세요.");
     if (form.bestReason === "기타" && !form.bestReasonEtc.trim()) return notify("도움이 된 기타 이유를 입력해주세요.");
     if (!form.improvementSessionId) return notify("보완이 필요한 강의를 선택해주세요. 해당 없으면 ‘없음’을 선택하세요.");
     if (form.improvementSessionId !== "none" && !form.improvementReason) return notify("보완이 필요하다고 느낀 이유를 선택해주세요.");
     if (form.improvementReason === "기타" && !form.improvementReasonEtc.trim()) return notify("보완이 필요한 기타 이유를 입력해주세요.");
     if (!form.workApplicationPoint.trim()) return notify("내 업무에 가져갈 한 가지를 입력해주세요.");
-    setCourse((current) => ({
-      ...current,
-      jobReflections: [...(current.jobReflections || []), {
-        id: uid("job-reflection"),
-        courseId: current.code,
+    setSaving(true);
+    try {
+      const result = await onSave(course, {
+        id: `job-reflection:${course.code}:${participantId}:${date}`,
+        courseId: course.code,
         participantId,
         studentName: participantName,
         classId,
@@ -2886,9 +2922,17 @@ function StudentJobReflection({ course, setCourse, student, notify }) {
         improvementReasonEtc: form.improvementReason === "기타" ? form.improvementReasonEtc.trim() : null,
         workApplicationPoint: form.workApplicationPoint.trim(),
         createdAt: now(),
-      }],
-    }));
-    notify("오늘의 직무강의 회고를 저장했습니다.");
+      });
+      if (!result.ok) {
+        console.error("직무강의 회고 저장 실패", result.error);
+        notify("회고가 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        return;
+      }
+      setSavedReflection(result.jobReflection);
+      notify("오늘의 직무강의 회고를 저장했습니다.");
+    } finally {
+      setSaving(false);
+    }
   };
   const sessionTitle = (id) => sessions.find((session) => session.id === id)?.title || "-";
   const bestReasonLabel = form.bestReason === "기타" ? form.bestReasonEtc : form.bestReason;
@@ -2945,8 +2989,8 @@ function StudentJobReflection({ course, setCourse, student, notify }) {
             </div>}
           </div>
           <div className="job-wizard-actions">
-            <button className="secondary" onClick={previousStep} disabled={step === 1}>이전</button>
-            {step < 6 ? <button className="primary" onClick={nextStep}>다음</button> : <button className="primary" onClick={save}>오늘 회고 제출</button>}
+            <button className="secondary" onClick={previousStep} disabled={step === 1 || saving}>이전</button>
+            {step < 6 ? <button className="primary" disabled={saving} onClick={nextStep}>다음</button> : <button className="primary" disabled={saving} onClick={() => { void save(); }}>{saving ? "저장 중…" : "오늘 회고 제출"}</button>}
           </div>
         </div>
       )}
@@ -4365,11 +4409,118 @@ function ProfessorJobReflection({ course, setCourse, notify, classFilter = "clas
   const [showAllBest, setShowAllBest] = useState(false);
   const [showAllImprovement, setShowAllImprovement] = useState(false);
   const [visibleRawCount, setVisibleRawCount] = useState(5);
-  const selectedClassName = course.classes.find((item) => item.id === classFilter)?.name || "1반";
-  const sessions = (course.jobSessions || []).filter((session) => session.date === selectedDate && session.classId === classFilter).sort((a, b) => a.startTime.localeCompare(b.startTime));
-  const reflections = (course.jobReflections || []).filter((reflection) => reflection.date === selectedDate && reflection.classId === classFilter);
-  const summary = summarizeJobReflections(sessions, reflections, participantCount);
+  const [analysis, setAnalysis] = useState(null);
+  const [analysisStatus, setAnalysisStatus] = useState("idle");
+  const [analysisError, setAnalysisError] = useState("");
+  const analysisRequestRef = useRef(0);
+  const analysisPendingRef = useRef(false);
+  const analysisAbortRef = useRef(null);
+  const selectedClass = course.classes.find((item) => item.id === classFilter) || { id: classFilter, name: "1반" };
+  const selectedClassName = selectedClass.name || "1반";
+  const sessions = useMemo(
+    () => (course.jobSessions || []).filter((session) => session.date === selectedDate && session.classId === classFilter).sort((a, b) => a.startTime.localeCompare(b.startTime)),
+    [classFilter, course.jobSessions, selectedDate],
+  );
+  const reflections = useMemo(
+    () => (course.jobReflections || []).filter((reflection) => reflection.date === selectedDate && reflection.classId === classFilter),
+    [classFilter, course.jobReflections, selectedDate],
+  );
+  const summary = useMemo(
+    () => summarizeJobReflections(sessions, reflections, participantCount),
+    [participantCount, reflections, sessions],
+  );
+  const analysisScopeKey = useMemo(
+    () => JSON.stringify({
+      courseCode: course.code,
+      classId: classFilter,
+      selectedDate,
+      sessions: sessions.map(({ id, title }) => [id, title]),
+      reflections: reflections.map((reflection) => [
+        reflection.id,
+        reflection.createdAt,
+        reflection.bestSessionId,
+        reflection.bestReason,
+        reflection.bestReasonEtc,
+        reflection.improvementSessionId,
+        reflection.improvementReason,
+        reflection.improvementReasonEtc,
+        reflection.workApplicationPoint,
+      ]),
+    }),
+    [classFilter, course.code, reflections, selectedDate, sessions],
+  );
+  const visibleAnalysis = analysis?.scopeKey === analysisScopeKey ? analysis : null;
   const applicationKeyword = summary.applicationPoints[0] ? `${summary.applicationPoints[0].slice(0, 20)}${summary.applicationPoints[0].length > 20 ? "…" : ""}` : "-";
+
+  const runJobReflectionAnalysis = useCallback(async () => {
+    if (analysisPendingRef.current) return;
+    const requestId = analysisRequestRef.current + 1;
+    analysisRequestRef.current = requestId;
+    analysisAbortRef.current?.abort();
+    analysisAbortRef.current = null;
+    setAnalysisError("");
+
+    if (!reflections.length) {
+      setAnalysis(null);
+      setAnalysisStatus("idle");
+      return;
+    }
+
+    if (AI_MODE === "mock") {
+      setAnalysis({
+        ...summary,
+        dataWarning: reflections.length < 3 ? "응답 수가 적어 공통 경향으로 일반화하기 어렵습니다." : null,
+        generatedAt: now(),
+        scopeKey: analysisScopeKey,
+        meta: { mode: "mock", source: "mock", persisted: false },
+      });
+      setAnalysisStatus("ready");
+      return;
+    }
+
+    const configurationError = getAIConfigurationError();
+    if (configurationError) {
+      setAnalysisStatus("error");
+      setAnalysisError(configurationError);
+      return;
+    }
+
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+    analysisPendingRef.current = true;
+    setAnalysisStatus("loading");
+    try {
+      const result = await requestJobReflectionAnalysis(
+        course,
+        participantCount,
+        selectedClass,
+        selectedDate,
+        { signal: controller.signal },
+      );
+      if (analysisRequestRef.current !== requestId) return;
+      setAnalysis({ ...result, scopeKey: analysisScopeKey });
+      setAnalysisStatus("ready");
+    } catch (error) {
+      if (analysisRequestRef.current !== requestId || error?.code === "REQUEST_CANCELLED") return;
+      setAnalysisStatus("error");
+      setAnalysisError(error?.message || "AI 직무강의 회고 분석을 생성하지 못했습니다. 다시 시도해 주세요.");
+    } finally {
+      if (analysisRequestRef.current === requestId) {
+        analysisPendingRef.current = false;
+        analysisAbortRef.current = null;
+      }
+    }
+  }, [analysisScopeKey, course, participantCount, reflections.length, selectedClass, selectedDate, summary]);
+
+  useEffect(() => {
+    void runJobReflectionAnalysis();
+    return () => {
+      analysisRequestRef.current += 1;
+      analysisAbortRef.current?.abort();
+      analysisAbortRef.current = null;
+      analysisPendingRef.current = false;
+    };
+  }, [runJobReflectionAnalysis]);
 
   const addSession = () => {
     if (readOnly) return notify("직무강의 목록은 교육 중 단계에서만 추가할 수 있습니다.");
@@ -4434,7 +4585,21 @@ function ProfessorJobReflection({ course, setCourse, notify, classFilter = "clas
           {summary.applicationPoints.slice(0, 12).map((text, index) => <blockquote key={`${text}-${index}`}>“{text}”</blockquote>)}
           {!summary.applicationPoints.length && <div className="board-empty">아직 작성된 현업 적용 문장이 없습니다.</div>}
         </details>
-        <div className="job-summary-cards"><article><span>AI 시연용 분석 요약</span><p>{summary.analysis}</p></article><article><span>본부 과정 담당자용 개선 요약</span><p>{summary.headquartersSummary}</p></article><article><span>교육원 운영 담당자용 요약</span><p>{summary.operationsSummary}</p></article></div>
+        {reflections.length ? <>
+          <div className="transfer-ai-toolbar">
+            <div className="ai-result-meta">
+              <span>{visibleAnalysis?.meta?.mode === "mock" ? "데모 분석(AI 미연결)" : visibleAnalysis?.meta?.source === "cache" ? "AI 분석 · 캐시" : visibleAnalysis ? "실제 AI 분석" : "AI 분석 준비"}</span>
+              <b>회고 {reflections.length}건</b>
+              <time>{visibleAnalysis?.generatedAt ? new Date(visibleAnalysis.generatedAt).toLocaleString("ko-KR") : selectedDate}</time>
+            </div>
+            <button className="secondary compact" disabled={analysisStatus === "loading"} onClick={() => { void runJobReflectionAnalysis(); }}>{analysisStatus === "loading" ? "분석 중…" : "분석 새로고침"}</button>
+          </div>
+          {analysisStatus === "loading" && <div className="goal-ai-state is-loading" role="status" aria-live="polite">직무강의 회고를 현업 적용성·과정 개선·교육원 운영 관점으로 분석하고 있습니다.</div>}
+          {analysisStatus === "error" && <div className="goal-ai-state is-error" role="alert"><span>{analysisError}{visibleAnalysis ? " 이전 정상 분석을 유지합니다." : ""}</span><button className="secondary compact" onClick={() => { void runJobReflectionAnalysis(); }}>다시 시도</button></div>}
+          {visibleAnalysis?.warning && <p className="ai-result-warning" role="status">{visibleAnalysis.warning.message}</p>}
+          {visibleAnalysis?.dataWarning && <p className="ai-result-warning" role="status">{visibleAnalysis.dataWarning}</p>}
+          {visibleAnalysis && <div className="job-summary-cards"><article><span>AI 직무강의 회고 분석</span><p>{visibleAnalysis.analysis}</p><ReviewBadge /></article><article><span>본부 과정 담당자용 AI 개선 요약</span><p>{visibleAnalysis.headquartersSummary}</p><ReviewBadge /></article><article><span>교육원 운영 담당자용 AI 요약</span><p>{visibleAnalysis.operationsSummary}</p><ReviewBadge /></article></div>}
+        </> : <div className="job-summary-cards"><article><span>AI 직무강의 회고 분석</span><p>{summary.analysis}</p></article><article><span>본부 과정 담당자용 AI 개선 요약</span><p>{summary.headquartersSummary}</p></article><article><span>교육원 운영 담당자용 AI 요약</span><p>{summary.operationsSummary}</p></article></div>}
         <details className="job-raw-responses" onToggle={(event) => { if (!event.currentTarget.open) setVisibleRawCount(5); }}>
           <summary>교육생 원문 보기 <span>{reflections.length}건</span></summary>
           {reflections.slice(0, visibleRawCount).map((reflection) => <article key={reflection.id}><b>{reflection.studentName} <em className="class-tag">{reflection.className || "1반"}</em></b><p>{reflection.workApplicationPoint}</p><small>도움 이유: {reflection.bestReason}{reflection.bestReasonEtc ? ` · ${reflection.bestReasonEtc}` : ""}</small></article>)}

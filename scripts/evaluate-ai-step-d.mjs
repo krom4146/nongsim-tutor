@@ -15,7 +15,7 @@ const baseUrl = String(args["base-url"] || "").replace(/\/$/u, "");
 const origin = String(args.origin || baseUrl);
 const delayMs = Number(args["delay-ms"] || 7_000);
 const limitPerTask = Number(args["limit-per-task"] || Number.POSITIVE_INFINITY);
-const requestedTasks = String(args.tasks || "goalCohort,goalCompose,pollCluster,transferReport,missionDraft,reportFeedback")
+const requestedTasks = String(args.tasks || "goalCohort,goalCompose,pollCluster,transferReport,jobReflectionAnalysis,missionDraft,reportFeedback")
   .split(",")
   .map((task) => task.trim())
   .filter(Boolean);
@@ -36,6 +36,7 @@ const FORBIDDEN_CLAIMS = {
   goalCompose: ["서울지점", "매출", "3개월", "고객 100명"],
   pollCluster: ["서울지점", "매출", "교육 덕분"],
   transferReport: ["서울지점", "매출", "생산성", "교육만으로", "교육 덕분"],
+  jobReflectionAnalysis: ["서울지점", "매출", "생산성", "교육만으로", "교육 덕분"],
   missionDraft: ["서울지점", "매출", "3개월", "고객 100명"],
   reportFeedback: ["서울지점", "매출", "징계", "해고"],
 };
@@ -65,6 +66,10 @@ function modelOutput(task, data) {
       supportHighlights: output.supportHighlights.map(stripEvidence),
     };
   }
+  if (task === "jobReflectionAnalysis") {
+    const { evidence: _evidence, evidenceCount: _count, generatedAt: _generatedAt, ...output } = data;
+    return output;
+  }
   return { when: data.when, what: data.what, how: data.how };
 }
 
@@ -72,6 +77,7 @@ function allowedEvidence(task, payload) {
   if (task === "goalCohort") return new Set(payload.goals.map(({ text }) => text));
   if (task === "pollCluster") return new Set(payload.responses.map(({ text }) => text));
   if (task === "transferReport") return new Set(payload.surveys.flatMap(({ applied, support }) => [applied, support]));
+  if (task === "jobReflectionAnalysis") return new Set(payload.reflections.map(({ workApplicationPoint }) => workApplicationPoint));
   return new Set();
 }
 
@@ -85,6 +91,7 @@ function returnedEvidence(task, data) {
       ...data.supportHighlights.flatMap(({ evidence }) => evidence),
     ].map(({ quote }) => quote);
   }
+  if (task === "jobReflectionAnalysis") return data.evidence.map(({ quote }) => quote);
   return [];
 }
 

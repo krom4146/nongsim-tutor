@@ -4,6 +4,7 @@ import {
   boardAnalysisOutputSchema,
   goalCohortOutputSchema,
   goalComposeOutputSchema,
+  jobReflectionAnalysisOutputSchema,
   missionDraftOutputSchema,
   pollClusterOutputSchema,
   reportFeedbackOutputSchema,
@@ -61,6 +62,17 @@ ${COMMON_GROUNDING_RULES}
 장애요인 label은 입력의 선택값을 그대로 사용하고 count는 해당 선택값의 실제 응답 수와 같아야 합니다.
 설문에 없는 장애요인이나 참여자 식별자를 만들지 마세요.
 교육 외 업무 환경 요인이 함께 작용할 수 있음을 전제하고 인과를 단정하지 마세요.
+응답이 3건 미만이면 dataWarning에 일반화 한계를 명시하세요.`;
+
+const JOB_REFLECTION_ANALYSIS_SYSTEM_PROMPT = `당신은 농협 직무교육의 당일 회고를 분석해 과정 개선을 돕는 교수설계 보조 도구입니다.
+${COMMON_GROUNDING_RULES}
+강의 목록, 도움이 된 강의와 이유, 보완이 필요한 강의와 이유, 교육생이 작성한 현업 적용 문장을 함께 분석하세요.
+analysis에는 어떤 강의 내용이 어떤 현업 행동과 연결되었는지 입력 근거 범위에서만 요약하세요.
+headquartersSummary에는 다음 기수의 강의 내용·사례·실습·교안 개선에 활용할 시사점을 작성하세요.
+operationsSummary에는 교육원 운영 관점의 일정·진행·수집·후속 확인 시사점을 작성하되, 입력에 운영 근거가 없으면 부족하다고 명시하세요.
+세 요약과 모든 권고 행동에 실제 회고 sourceId를 넣으세요. 강의 선택 수나 응답 수를 언급할 때는 제공된 입력에서 정확히 셀 수 있는 값만 사용하세요.
+보완 강의를 '없음'으로 선택한 응답은 특정 강의의 개선 요구로 해석하지 마세요.
+강사나 교육생 개인을 평가·식별하지 말고, 교육이 현업 성과의 유일한 원인이라고 단정하지 마세요.
 응답이 3건 미만이면 dataWarning에 일반화 한계를 명시하세요.`;
 
 const MISSION_DRAFT_SYSTEM_PROMPT = `당신은 농협 교육 참여자가 현업에서 실행할 개인 미션을 작성하도록 돕는 도구입니다.
@@ -144,6 +156,15 @@ export const AI_TASK_PROMPTS = Object.freeze({
     outputFormatName: "transfer_report",
     maxOutputTokens: 4_000,
     buildUserInput: (payload) => textInput(payload, "transfer_data"),
+  }),
+  jobReflectionAnalysis: Object.freeze({
+    purpose: "비식별 직무강의 회고를 현업 적용성·과정 개선·교육원 운영 관점으로 분석한다.",
+    promptVersion: "job-reflection-analysis-v1",
+    systemPrompt: JOB_REFLECTION_ANALYSIS_SYSTEM_PROMPT,
+    outputSchema: jobReflectionAnalysisOutputSchema,
+    outputFormatName: "job_reflection_analysis",
+    maxOutputTokens: 3_000,
+    buildUserInput: (payload) => textInput(payload, "job_reflection_data"),
   }),
   missionDraft: Object.freeze({
     purpose: "목표·성찰·직무 회고에 근거한 실행 가능한 현업 미션을 작성한다.",

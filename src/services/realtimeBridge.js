@@ -58,6 +58,7 @@ export function subscribeCourse(code, onChange) {
     const client = clientResult.client;
     const channelName = `nongsim-course-${normalizedCode}-${crypto.randomUUID()}`;
     const filter = `course_code=eq.${normalizedCode}`;
+    const courseFilter = `code=eq.${normalizedCode}`;
     let debounceTimer = null;
     let disposed = false;
 
@@ -75,6 +76,12 @@ export function subscribeCourse(code, onChange) {
 
     const channel = client
       .channel(channelName)
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "courses",
+        filter: courseFilter,
+      }, handleDatabaseChange)
       .on("postgres_changes", {
         event: "*",
         schema: "public",

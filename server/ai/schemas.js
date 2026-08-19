@@ -586,6 +586,175 @@ export function projectTransferReportResult(result, payload, generatedAt = new D
   };
 }
 
+const jobReflectionSessionSchema = z.object({
+  sessionId: taskSourceIdSchema,
+  title: z.string().trim().min(1).max(MAX_SHORT_TEXT_LENGTH),
+}).strict();
+
+const jobReflectionSourceSchema = z.object({
+  sourceId: taskSourceIdSchema,
+  bestSessionId: taskSourceIdSchema,
+  bestReason: z.string().trim().min(1).max(MAX_SHORT_TEXT_LENGTH),
+  bestReasonEtc: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH).nullable(),
+  improvementSessionId: taskSourceIdSchema.nullable(),
+  improvementReason: z.string().trim().min(1).max(MAX_SHORT_TEXT_LENGTH).nullable(),
+  improvementReasonEtc: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH).nullable(),
+  workApplicationPoint: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH),
+}).strict();
+
+export const jobReflectionAnalysisPayloadSchema = z.object({
+  classId: optionalScopeText,
+  className: optionalScopeText,
+  reflectionDate: z.iso.date(),
+  participantCount: z.number().int().nonnegative().max(100_000),
+  sessions: z.array(jobReflectionSessionSchema).min(1).max(100),
+  reflections: z.array(jobReflectionSourceSchema).min(1).max(MAX_SOURCE_COUNT),
+}).strict().superRefine((payload, context) => {
+  addUniqueSourceIssues(payload.reflections, context, "reflections");
+  const sessionIds = new Set();
+  payload.sessions.forEach((session, index) => {
+    if (sessionIds.has(session.sessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "sessionId must be unique.",
+        path: ["sessions", index, "sessionId"],
+      });
+    }
+    sessionIds.add(session.sessionId);
+  });
+  payload.reflections.forEach((reflection, index) => {
+    if (!sessionIds.has(reflection.bestSessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "bestSessionId must reference a supplied session.",
+        path: ["reflections", index, "bestSessionId"],
+      });
+    }
+    if (reflection.improvementSessionId
+      && reflection.improvementSessionId !== "none"
+      && !sessionIds.has(reflection.improvementSessionId)) {
+      context.addIssue({
+        code: "custom",
+        message: "improvementSessionId must reference a supplied session or none.",
+        path: ["reflections", index, "improvementSessionId"],
+      });
+    }
+  });
+  addTotalTextIssue(payload.reflections.map((reflection) => ({
+    text: [
+      reflection.bestReason,
+      reflection.bestReasonEtc,
+      reflection.improvementReason,
+      reflection.improvementReasonEtc,
+      reflection.workApplicationPoint,
+    ].filter(Boolean).join(" "),
+  })), context, "reflections");
+  if (payload.participantCount < payload.reflections.length) {
+    context.addIssue({
+      code: "custom",
+      message: "participantCount cannot be smaller than reflection count.",
+      path: ["participantCount"],
+    });
+  }
+});
+
+export const jobReflectionAnalysisRequestSchema = z.object({
+  task: z.literal("jobReflectionAnalysis"),
+  courseCode: courseCodeSchema,
+  payload: jobReflectionAnalysisPayloadSchema,
+}).strict();
+
+const jobReflectionEvidenceIdsSchema = z.array(taskSourceIdSchema).min(1).max(MAX_SOURCE_COUNT);
+
+export const jobReflectionAnalysisOutputSchema = z.object({
+  analysis: z.string().min(1).max(2_000),
+  analysisSourceIds: jobReflectionEvidenceIdsSchema,
+  headquartersSummary: z.string().min(1).max(2_000),
+  headquartersSourceIds: jobReflectionEvidenceIdsSchema,
+  operationsSummary: z.string().min(1).max(2_000),
+  operationsSourceIds: jobReflectionEvidenceIdsSchema,
+  recommendedActions: z.array(z.object({
+    audience: z.enum(["headquarters", "operations"]),
+    action: z.string().min(1).max(500),
+    sourceIds: jobReflectionEvidenceIdsSchema,
+  }).strict()).min(1).max(6),
+  sampleSize: z.number().int().nonnegative(),
+  dataWarning: z.string().max(500).nullable(),
+}).strict();
+
+export function normalizeJobReflectionAnalysisRequest(value) {
+  const parsed = jobReflectionAnalysisRequestSchema.parse(value);
+  return {
+    task: parsed.task,
+    courseCode: parsed.courseCode.toUpperCase(),
+    payload: {
+      classId: parsed.payload.classId ? normalizeWhitespace(parsed.payload.classId) : null,
+      className: parsed.payload.className ? normalizeWhitespace(parsed.payload.className) : null,
+      reflectionDate: parsed.payload.reflectionDate,
+      participantCount: parsed.payload.participantCount,
+      sessions: parsed.payload.sessions.map((session) => ({
+        sessionId: session.sessionId,
+        title: redactPersonalData(normalizeWhitespace(session.title)),
+      })),
+      reflections: parsed.payload.reflections.map((reflection) => ({
+        sourceId: reflection.sourceId,
+        bestSessionId: reflection.bestSessionId,
+        bestReason: redactPersonalData(normalizeWhitespace(reflection.bestReason)),
+        bestReasonEtc: reflection.bestReasonEtc
+          ? redactPersonalData(normalizeWhitespace(reflection.bestReasonEtc))
+          : null,
+        improvementSessionId: reflection.improvementSessionId,
+        improvementReason: reflection.improvementReason
+          ? redactPersonalData(normalizeWhitespace(reflection.improvementReason))
+          : null,
+        improvementReasonEtc: reflection.improvementReasonEtc
+          ? redactPersonalData(normalizeWhitespace(reflection.improvementReasonEtc))
+          : null,
+        workApplicationPoint: redactPersonalData(normalizeWhitespace(reflection.workApplicationPoint)),
+      })),
+    },
+  };
+}
+
+export function validateJobReflectionAnalysisSources(result, payload) {
+  const allowedSourceIds = new Set(payload.reflections.map((reflection) => reflection.sourceId));
+  const referencedSourceIds = [
+    ...result.analysisSourceIds,
+    ...result.headquartersSourceIds,
+    ...result.operationsSourceIds,
+    ...result.recommendedActions.flatMap((action) => action.sourceIds),
+  ];
+  assertKnownSourceIds(referencedSourceIds, allowedSourceIds);
+  if (result.sampleSize !== payload.reflections.length) {
+    throw new Error("INVALID_SAMPLE_SIZE");
+  }
+}
+
+export function projectJobReflectionAnalysisResult(result, payload, generatedAt = new Date().toISOString()) {
+  validateJobReflectionAnalysisSources(result, payload);
+  const reflectionById = new Map(payload.reflections.map((reflection, index) => [reflection.sourceId, {
+    source: "jobReflection",
+    by: `응답자 ${index + 1}`,
+    quote: reflection.workApplicationPoint,
+  }]));
+  const evidenceSourceIds = uniqueSourceIds([
+    ...result.analysisSourceIds,
+    ...result.headquartersSourceIds,
+    ...result.operationsSourceIds,
+    ...result.recommendedActions.flatMap((action) => action.sourceIds),
+  ]).slice(0, EVIDENCE_LIMIT);
+  const dataWarning = payload.reflections.length < 3 && !result.dataWarning
+    ? "응답 수가 적어 강의 효과나 개선 요구를 공통 경향으로 일반화하기 어렵습니다."
+    : result.dataWarning;
+  return {
+    ...result,
+    dataWarning,
+    evidence: evidenceSourceIds.map((sourceId) => reflectionById.get(sourceId)),
+    evidenceCount: evidenceSourceIds.length,
+    generatedAt,
+  };
+}
+
 export const missionDraftPayloadSchema = z.object({
   goal: taskSourceSchema.nullable().optional(),
   achievementResponses: z.array(taskSourceSchema).max(20),

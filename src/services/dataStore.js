@@ -365,6 +365,19 @@ export function surveyFromRow(row) {
   };
 }
 
+async function requestJobReflectionApi(action, payload = {}) {
+  const response = await fetch("/api/job-reflections", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body?.ok) {
+    throw new Error(body?.error?.message || "직무강의 회고 서버 요청에 실패했습니다.");
+  }
+  return body.data;
+}
+
 async function getSupabaseActivities(client, courseCodes) {
   const codes = [...new Set((courseCodes || []).filter(Boolean))];
   if (!codes.length) return new Map();
@@ -403,7 +416,7 @@ async function getSupabaseActivities(client, courseCodes) {
 async function getSupabaseOutcomeData(client, courseCodes) {
   const codes = [...new Set((courseCodes || []).filter(Boolean))];
   if (!codes.length) return new Map();
-  const [goalResult, achievementResult, missionResult, surveyResult] = await Promise.all([
+  const [goalResult, achievementResult, missionResult, surveyResult, jobReflections] = await Promise.all([
     client
       .from("goals")
       .select(GOAL_COLUMNS)
@@ -424,13 +437,14 @@ async function getSupabaseOutcomeData(client, courseCodes) {
       .select(SURVEY_COLUMNS)
       .in("course_code", codes)
       .order("submitted_at", { ascending: true }),
+    requestJobReflectionApi("list", { courseCodes: codes }).then((result) => result.reflections || []),
   ]);
   if (goalResult.error) throw new Error(errorMessage(goalResult.error));
   if (achievementResult.error) throw new Error(errorMessage(achievementResult.error));
   if (missionResult.error) throw new Error(errorMessage(missionResult.error));
   if (surveyResult.error) throw new Error(errorMessage(surveyResult.error));
 
-  const outcomeByCourse = new Map(codes.map((code) => [code, { goals: [], achievements: [], missions: [], surveys: [] }]));
+  const outcomeByCourse = new Map(codes.map((code) => [code, { goals: [], achievements: [], missions: [], surveys: [], jobReflections: [] }]));
   (goalResult.data || []).map(goalFromRow).filter(Boolean).forEach((goal) => {
     const outcome = outcomeByCourse.get(goal.courseId);
     if (outcome) outcome.goals = mergeById(outcome.goals, goal);
@@ -446,6 +460,10 @@ async function getSupabaseOutcomeData(client, courseCodes) {
   (surveyResult.data || []).map(surveyFromRow).filter(Boolean).forEach((survey) => {
     const outcome = outcomeByCourse.get(survey.courseId);
     if (outcome) outcome.surveys = mergeById(outcome.surveys, survey);
+  });
+  (jobReflections || []).filter(Boolean).forEach((reflection) => {
+    const outcome = outcomeByCourse.get(reflection.courseId);
+    if (outcome) outcome.jobReflections = mergeById(outcome.jobReflections, reflection);
   });
   return outcomeByCourse;
 }
@@ -484,6 +502,7 @@ function withOutcomeData(course, outcome = {}) {
     achievements,
     missions,
     surveys: outcome.surveys || [],
+    jobReflections: outcome.jobReflections || [],
   });
 }
 
@@ -820,6 +839,46 @@ export async function saveSurvey(course, survey) {
       .single();
     if (error) return { ok: false, error: errorMessage(error) };
     return { ok: true, survey: surveyFromRow(data) };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function saveJobReflection(course, reflection) {
+  if (!reflection.participantId || !reflection.classId || !reflection.className || !reflection.date) {
+    return { ok: false, error: "Job reflection participant, class, and date are required." };
+  }
+  if (DATA_MODE === "local") {
+    const savedJobReflection = { ...reflection, courseId: course.code };
+    const result = await saveLocalCourse({
+      ...course,
+      jobReflections: mergeById(course.jobReflections, savedJobReflection),
+    });
+    return result.ok ? { ...result, jobReflection: savedJobReflection } : result;
+  }
+
+  try {
+    const data = await requestJobReflectionApi("save", {
+      courseCode: course.code,
+      reflection,
+    });
+    return { ok: true, jobReflection: data.reflection };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+export async function getJobReflection(courseCode, participantId) {
+  if (DATA_MODE === "local") {
+    const course = await getCourse(courseCode);
+    const reflection = [...(course?.jobReflections || [])]
+      .filter((item) => item.participantId === participantId)
+      .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0] || null;
+    return { ok: true, jobReflection: reflection };
+  }
+  try {
+    const data = await requestJobReflectionApi("mine", { courseCode, participantId });
+    return { ok: true, jobReflection: data.reflection || null };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
   }

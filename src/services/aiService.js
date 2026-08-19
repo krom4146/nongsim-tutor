@@ -68,6 +68,50 @@ export function buildTransferReportRequest(course, participantCount, classInfo) 
   };
 }
 
+export function buildJobReflectionAnalysisRequest(course, participantCount, classInfo, reflectionDate) {
+  const classId = classInfo?.id || null;
+  const sessions = (course.jobSessions || [])
+    .filter((session) => session.date === reflectionDate && (!classId || session.classId === classId))
+    .map((session) => ({
+      sessionId: String(session.id || "").trim(),
+      title: String(session.title || "").trim(),
+    }))
+    .filter((session) => session.sessionId && session.title);
+  const knownSessionIds = new Set(sessions.map((session) => session.sessionId));
+  const reflections = (course.jobReflections || [])
+    .filter((reflection) => reflection.date === reflectionDate && (!classId || reflection.classId === classId))
+    .filter((reflection) => knownSessionIds.has(reflection.bestSessionId))
+    .map((reflection, index) => {
+      const improvementSessionId = String(reflection.improvementSessionId || "").trim();
+      return {
+        sourceId: `job-reflection-${String(index + 1).padStart(2, "0")}`,
+        bestSessionId: String(reflection.bestSessionId || "").trim(),
+        bestReason: String(reflection.bestReason || "").trim(),
+        bestReasonEtc: String(reflection.bestReasonEtc || "").trim() || null,
+        improvementSessionId: improvementSessionId === "none" || knownSessionIds.has(improvementSessionId)
+          ? improvementSessionId
+          : null,
+        improvementReason: String(reflection.improvementReason || "").trim() || null,
+        improvementReasonEtc: String(reflection.improvementReasonEtc || "").trim() || null,
+        workApplicationPoint: String(reflection.workApplicationPoint || "").trim(),
+      };
+    })
+    .filter((reflection) => reflection.bestReason && reflection.workApplicationPoint);
+
+  return {
+    task: "jobReflectionAnalysis",
+    courseCode: course.code,
+    payload: {
+      classId,
+      className: classInfo?.name || null,
+      reflectionDate,
+      participantCount: Math.max(reflections.length, Number(participantCount) || 0),
+      sessions,
+      reflections,
+    },
+  };
+}
+
 export function buildPollClusterRequest(course, round) {
   const responses = (round?.items || [])
     .filter((item) => typeof item.text === "string" && item.text.trim())
@@ -167,6 +211,13 @@ export function requestGoalCompose(course, questions, answers, options) {
 
 export function requestTransferReport(course, participantCount, classInfo, options) {
   return requestAI(buildTransferReportRequest(course, participantCount, classInfo), options);
+}
+
+export function requestJobReflectionAnalysis(course, participantCount, classInfo, reflectionDate, options) {
+  return requestAI(
+    buildJobReflectionAnalysisRequest(course, participantCount, classInfo, reflectionDate),
+    options,
+  );
 }
 
 export function requestPollCluster(course, round, options) {

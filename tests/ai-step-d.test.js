@@ -143,6 +143,24 @@ function groundedOutput(task, payload) {
       dataWarning: sourceIds.length < 3 ? "응답이 적어 인과로 일반화하기 어렵습니다." : null,
     };
   }
+  if (task === "jobReflectionAnalysis") {
+    const sourceIds = payload.reflections.map(({ sourceId }) => sourceId);
+    return {
+      analysis: "입력 회고에서 강의 내용과 현업 행동을 연결한 실천 방향이 확인됩니다.",
+      analysisSourceIds: sourceIds,
+      headquartersSummary: "입력에서 반복된 보완 이유를 다음 기수 사례와 실습 구성에서 검토할 수 있습니다.",
+      headquartersSourceIds: sourceIds,
+      operationsSummary: "제출된 회고 범위에서 수집 현황과 후속 확인이 필요한 지점을 검토할 수 있습니다.",
+      operationsSourceIds: sourceIds,
+      recommendedActions: [{
+        audience: "operations",
+        action: "입력 회고에 나온 운영 관련 요구를 후속 확인 항목에 포함하세요.",
+        sourceIds,
+      }],
+      sampleSize: sourceIds.length,
+      dataWarning: sourceIds.length < 3 ? "응답 수가 적어 공통 경향으로 일반화하기 어렵습니다." : null,
+    };
+  }
   if (task === "missionDraft") {
     return {
       when: "입력에서 언급한 다음 업무 상황에서",
@@ -178,6 +196,7 @@ function inputEvidenceTexts(task, payload) {
   if (task === "goalCohort") return payload.goals.map(({ text }) => text);
   if (task === "pollCluster") return payload.responses.map(({ text }) => text);
   if (task === "transferReport") return payload.surveys.flatMap(({ applied, support }) => [applied, support]);
+  if (task === "jobReflectionAnalysis") return payload.reflections.map(({ workApplicationPoint }) => workApplicationPoint);
   return [];
 }
 
@@ -191,6 +210,7 @@ function projectedEvidenceTexts(task, projected) {
       ...projected.supportHighlights.flatMap(({ evidence }) => evidence),
     ].map(({ quote }) => quote);
   }
+  if (task === "jobReflectionAnalysis") return projected.evidence.map(({ quote }) => quote);
   return [];
 }
 
@@ -208,11 +228,12 @@ test("각 AI task는 3~5개의 고정 fixture와 STEP D 필수 경계 사례를 
     "poll-mixed-viewpoints",
     "goal-compose-typo-abbreviation",
     "goal-instruction-as-data",
+    "job-reflection-instruction-as-data",
     "board-unreadable",
   ].forEach((id) => assert.ok(ids.includes(id), id));
 });
 
-test("22개 고정 fixture는 스키마·sourceId·원문 근거·부족 경고를 통과한다", async () => {
+test("25개 고정 fixture는 스키마·sourceId·원문 근거·부족 경고를 통과한다", async () => {
   await withServerEnvironment(async () => {
     for (const [task, cases] of Object.entries(fixtures.tasks)) {
       const definition = AI_TASK_REGISTRY[task];
@@ -272,6 +293,23 @@ test("명시된 이름·사번·이메일·전화·식별번호는 모든 텍스
       goalCompose: { answers: [1, 2, 3].map((number) => ({ sourceId: `goal-pii-${number}`, question: `질문 ${number}`, text: number === 1 ? PII_TEXT : "업무 답변" })) },
       pollCluster: { round: { sourceId: "round-pii", prompt: PII_TEXT, questionType: "subjective", questionIntent: "general", anonymous: true }, responses: [{ sourceId: "poll-pii-01", text: PII_TEXT, agree: 0 }] },
       transferReport: { classId: null, className: null, participantCount: 1, surveys: [{ sourceId: "survey-pii-01", likert: [3, 3, 3, 3, 3], barriers: [], applied: PII_TEXT, support: PII_TEXT }] },
+      jobReflectionAnalysis: {
+        classId: null,
+        className: null,
+        reflectionDate: "2026-08-19",
+        participantCount: 1,
+        sessions: [{ sessionId: "job-session-pii", title: "안전 업무" }],
+        reflections: [{
+          sourceId: "job-reflection-pii",
+          bestSessionId: "job-session-pii",
+          bestReason: PII_TEXT,
+          bestReasonEtc: null,
+          improvementSessionId: "none",
+          improvementReason: null,
+          improvementReasonEtc: null,
+          workApplicationPoint: PII_TEXT,
+        }],
+      },
       missionDraft: { goal: { sourceId: "mission-pii-01", text: PII_TEXT }, achievementResponses: [], jobReflection: null },
       reportFeedback: { scenario: PII_TEXT, difficulty: "보통", turns: [{ speaker: "learner", text: PII_TEXT }] },
       boardAnalysis: { classId: null, className: null, moduleTitle: PII_TEXT, scopeLabel: "1팀", imageUrl: "https://fixture-project.supabase.co/storage/v1/object/public/board-images/NH-2480/pii.jpg" },
@@ -292,6 +330,7 @@ test("빈 데이터·매우 긴 입력·잘못된 장표 URL은 안전하게 거
       { task: "goalCohort", payload: { goals: [] } },
       { task: "pollCluster", payload: { responses: [] } },
       { task: "transferReport", payload: { surveys: [] } },
+      { task: "jobReflectionAnalysis", payload: { reflections: [] } },
       { task: "missionDraft", payload: { goal: null, achievementResponses: [], jobReflection: null } },
       { task: "reportFeedback", payload: { turns: [] } },
     ];

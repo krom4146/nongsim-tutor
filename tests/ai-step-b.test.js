@@ -119,6 +119,25 @@ function makeTransferOutput(payload) {
   };
 }
 
+function makeJobReflectionOutput(payload) {
+  const sourceIds = payload.reflections.map((reflection) => reflection.sourceId);
+  return {
+    analysis: "입력 회고에서 강의 내용과 현업 행동을 연결한 실천 방향이 확인됩니다.",
+    analysisSourceIds: sourceIds,
+    headquartersSummary: "입력에서 반복된 보완 이유를 다음 기수의 사례와 실습 구성에서 검토할 수 있습니다.",
+    headquartersSourceIds: sourceIds,
+    operationsSummary: "제출된 회고 범위에서 수집 현황과 후속 확인이 필요한 지점을 검토할 수 있습니다.",
+    operationsSourceIds: sourceIds,
+    recommendedActions: [{
+      audience: "headquarters",
+      action: "입력 회고에 나온 사례·실습 보완 요구를 교안 검토 항목에 포함하세요.",
+      sourceIds,
+    }],
+    sampleSize: sourceIds.length,
+    dataWarning: sourceIds.length < 3 ? "응답 수가 적어 공통 경향으로 일반화하기 어렵습니다." : null,
+  };
+}
+
 function makeMissionOutput() {
   return {
     when: "다음 팀 회의가 끝난 직후",
@@ -149,6 +168,7 @@ function makeModelOutput(task, payload) {
     pollCluster: makePollOutput,
     boardAnalysis: makeBoardOutput,
     transferReport: makeTransferOutput,
+    jobReflectionAnalysis: makeJobReflectionOutput,
     missionDraft: makeMissionOutput,
     reportFeedback: makeReportOutput,
   })[task](payload);
@@ -186,13 +206,14 @@ test("등록된 task는 서로 다른 요청·출력 스키마와 promptVersion�
     "pollCluster",
     "boardAnalysis",
     "transferReport",
+    "jobReflectionAnalysis",
     "missionDraft",
     "reportFeedback",
   ]);
-  assert.equal(new Set(definitions.map(({ requestSchema }) => requestSchema)).size, 7);
-  assert.equal(new Set(definitions.map(({ outputSchema }) => outputSchema)).size, 7);
-  assert.equal(new Set(definitions.map(({ promptVersion }) => promptVersion)).size, 7);
-  assert.equal(new Set(definitions.map(({ outputFormatName }) => outputFormatName)).size, 7);
+  assert.equal(new Set(definitions.map(({ requestSchema }) => requestSchema)).size, 8);
+  assert.equal(new Set(definitions.map(({ outputSchema }) => outputSchema)).size, 8);
+  assert.equal(new Set(definitions.map(({ promptVersion }) => promptVersion)).size, 8);
+  assert.equal(new Set(definitions.map(({ outputFormatName }) => outputFormatName)).size, 8);
   definitions.forEach((definition) => {
     assert.ok(definition.purpose.length > 0);
     assert.match(definition.systemPrompt, /[가-힣]/u);
@@ -200,7 +221,7 @@ test("등록된 task는 서로 다른 요청·출력 스키마와 promptVersion�
   });
 });
 
-test("22개 비식별 fixture가 task 레지스트리와 공통 API를 직접 통과한다", async () => {
+test("25개 비식별 fixture가 task 레지스트리와 공통 API를 직접 통과한다", async () => {
   await withServerEnvironment(async () => {
     for (const [task, taskFixtures] of Object.entries(fixtures.tasks)) {
       const definition = AI_TASK_REGISTRY[task];
@@ -263,6 +284,18 @@ test("근거형 task는 존재하지 않는 sourceIds와 잘못된 집계를 거
     ...transferOutput,
     barriers: [{ label: "새로 만든 장애요인", count: 1 }],
   }, transferPayload), /INVALID_BARRIER_COUNT/u);
+
+  const jobPayload = fixtures.tasks.jobReflectionAnalysis[0].input;
+  const jobOutput = makeJobReflectionOutput(jobPayload);
+  assert.doesNotThrow(() => AI_TASK_REGISTRY.jobReflectionAnalysis.validateEvidence(jobOutput, jobPayload));
+  assert.throws(() => AI_TASK_REGISTRY.jobReflectionAnalysis.validateEvidence({
+    ...jobOutput,
+    operationsSourceIds: ["job-reflection-unknown"],
+  }, jobPayload), /UNGROUNDED_SOURCE_ID/u);
+  assert.throws(() => AI_TASK_REGISTRY.jobReflectionAnalysis.validateEvidence({
+    ...jobOutput,
+    sampleSize: jobPayload.reflections.length + 1,
+  }, jobPayload), /INVALID_SAMPLE_SIZE/u);
 });
 
 test("boardAnalysis는 현재 Supabase 공개 board-images URL 한 장만 허용한다", async () => {
