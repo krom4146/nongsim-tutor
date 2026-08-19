@@ -5,6 +5,7 @@ import { handleJobReflectionRequest } from "../api/job-reflections.js";
 import {
   achievementFromRow,
   achievementToRow,
+  jobReflectionToApiInput,
   latestMissionsByParticipant,
 } from "../src/services/dataStore.js";
 import {
@@ -166,6 +167,39 @@ test("회고 서버 저장은 과정 참여자와 강의를 검증하고 DB 행�
     },
   };
   const fixture = createJobReflectionSupabaseFixture(course);
+  const uiReflection = {
+    id: "job-reflection:NH-4001:participant-1:2026-08-19",
+    courseId: "NH-4001",
+    participantId: "participant-1",
+    studentName: "교육생",
+    classId: "class-1",
+    className: "1반",
+    date: "2026-08-19",
+    bestSessionId: "session-1",
+    bestReason: "현업 절차와 바로 연결돼서",
+    bestReasonEtc: null,
+    improvementSessionId: "session-2",
+    improvementReason: "사례가 부족했다",
+    improvementReasonEtc: null,
+    workApplicationPoint: "계약서 확인 순서를 업무에 적용하겠다.",
+    createdAt: "2026-08-19T01:02:03.000Z",
+  };
+  const apiInput = jobReflectionToApiInput(uiReflection);
+  assert.deepEqual(Object.keys(apiInput), [
+    "participantId",
+    "date",
+    "bestSessionId",
+    "bestReason",
+    "bestReasonEtc",
+    "improvementSessionId",
+    "improvementReason",
+    "improvementReasonEtc",
+    "workApplicationPoint",
+    "createdAt",
+  ]);
+  assert.equal(JSON.stringify(apiInput).includes("studentName"), false);
+  assert.equal(JSON.stringify(apiInput).includes("className"), false);
+  assert.equal(JSON.stringify(apiInput).includes("job-reflection:"), false);
   const req = {
     method: "POST",
     headers: {
@@ -176,18 +210,7 @@ test("회고 서버 저장은 과정 참여자와 강의를 검증하고 DB 행�
     body: {
       action: "save",
       courseCode: "NH-4001",
-      reflection: {
-        participantId: "participant-1",
-        date: "2026-08-19",
-        bestSessionId: "session-1",
-        bestReason: "현업 절차와 바로 연결돼서",
-        bestReasonEtc: null,
-        improvementSessionId: "session-2",
-        improvementReason: "사례가 부족했다",
-        improvementReasonEtc: null,
-        workApplicationPoint: "계약서 확인 순서를 업무에 적용하겠다.",
-        createdAt: "2026-08-19T01:02:03.000Z",
-      },
+      reflection: apiInput,
     },
   };
   const res = createResponse();

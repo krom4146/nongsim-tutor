@@ -844,6 +844,21 @@ export async function saveSurvey(course, survey) {
   }
 }
 
+export function jobReflectionToApiInput(reflection) {
+  return {
+    participantId: reflection.participantId,
+    date: reflection.date,
+    bestSessionId: reflection.bestSessionId,
+    bestReason: reflection.bestReason,
+    bestReasonEtc: reflection.bestReasonEtc ?? null,
+    improvementSessionId: reflection.improvementSessionId ?? null,
+    improvementReason: reflection.improvementReason ?? null,
+    improvementReasonEtc: reflection.improvementReasonEtc ?? null,
+    workApplicationPoint: reflection.workApplicationPoint,
+    createdAt: reflection.createdAt,
+  };
+}
+
 export async function saveJobReflection(course, reflection) {
   if (!reflection.participantId || !reflection.classId || !reflection.className || !reflection.date) {
     return { ok: false, error: "Job reflection participant, class, and date are required." };
@@ -860,7 +875,7 @@ export async function saveJobReflection(course, reflection) {
   try {
     const data = await requestJobReflectionApi("save", {
       courseCode: course.code,
-      reflection,
+      reflection: jobReflectionToApiInput(reflection),
     });
     return { ok: true, jobReflection: data.reflection };
   } catch (error) {

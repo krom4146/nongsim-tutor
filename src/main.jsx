@@ -2925,7 +2925,8 @@ function StudentJobReflection({ course, existingReflection, onSave, student, not
       });
       if (!result.ok) {
         console.error("직무강의 회고 저장 실패", result.error);
-        notify("회고가 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+        const detail = typeof result.error === "string" ? result.error.trim() : "";
+        notify(detail ? `회고가 저장되지 않았습니다. ${detail}` : "회고가 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
         return;
       }
       setSavedReflection(result.jobReflection);
