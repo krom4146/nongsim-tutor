@@ -1,10 +1,12 @@
 import { AI_TASK_PROMPTS, buildAiTaskOpenAiRequest } from "./prompts.js";
 import {
   boardAnalysisRequestSchema,
+  completionReflectionAnalysisRequestSchema,
   goalComposeRequestSchema,
   jobReflectionAnalysisRequestSchema,
   missionDraftRequestSchema,
   normalizeBoardAnalysisRequest,
+  normalizeCompletionReflectionAnalysisRequest,
   normalizeGoalCohortRequest,
   normalizeGoalComposeRequest,
   normalizeJobReflectionAnalysisRequest,
@@ -14,6 +16,7 @@ import {
   normalizeTransferReportRequest,
   pollClusterRequestSchema,
   projectBoardAnalysisResult,
+  projectCompletionReflectionAnalysisResult,
   projectGoalCohortResult,
   projectGoalComposeResult,
   projectJobReflectionAnalysisResult,
@@ -25,6 +28,7 @@ import {
   transferReportRequestSchema,
   goalCohortRequestSchema,
   validateGoalCohortSources,
+  validateCompletionReflectionAnalysisSources,
   validateGoalComposeSources,
   validateJobReflectionAnalysisSources,
   validatePollClusterSources,
@@ -101,6 +105,14 @@ export const AI_TASK_REGISTRY = Object.freeze({
     validateEvidence: validateJobReflectionAnalysisSources,
     projectResult: projectJobReflectionAnalysisResult,
     hasSufficientData: (payload) => payload.sessions.length > 0 && payload.reflections.length > 0,
+    isExplicitlyEmpty: (payload) => Array.isArray(payload?.reflections) && payload.reflections.length === 0,
+  }),
+  completionReflectionAnalysis: createTaskDefinition("completionReflectionAnalysis", {
+    requestSchema: completionReflectionAnalysisRequestSchema,
+    normalizeRequest: normalizeCompletionReflectionAnalysisRequest,
+    validateEvidence: validateCompletionReflectionAnalysisSources,
+    projectResult: projectCompletionReflectionAnalysisResult,
+    hasSufficientData: (payload) => payload.reflections.length > 0,
     isExplicitlyEmpty: (payload) => Array.isArray(payload?.reflections) && payload.reflections.length === 0,
   }),
   missionDraft: createTaskDefinition("missionDraft", {

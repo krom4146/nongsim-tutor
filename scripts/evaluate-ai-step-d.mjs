@@ -15,7 +15,7 @@ const baseUrl = String(args["base-url"] || "").replace(/\/$/u, "");
 const origin = String(args.origin || baseUrl);
 const delayMs = Number(args["delay-ms"] || 7_000);
 const limitPerTask = Number(args["limit-per-task"] || Number.POSITIVE_INFINITY);
-const requestedTasks = String(args.tasks || "goalCohort,goalCompose,pollCluster,transferReport,jobReflectionAnalysis,missionDraft,reportFeedback")
+const requestedTasks = String(args.tasks || "goalCohort,goalCompose,pollCluster,transferReport,jobReflectionAnalysis,completionReflectionAnalysis,missionDraft,reportFeedback")
   .split(",")
   .map((task) => task.trim())
   .filter(Boolean);
@@ -37,6 +37,7 @@ const FORBIDDEN_CLAIMS = {
   pollCluster: ["서울지점", "매출", "교육 덕분"],
   transferReport: ["서울지점", "매출", "생산성", "교육만으로", "교육 덕분"],
   jobReflectionAnalysis: ["서울지점", "매출", "생산성", "교육만으로", "교육 덕분"],
+  completionReflectionAnalysis: ["서울지점", "매출", "생산성", "교육만으로", "교육 덕분"],
   missionDraft: ["서울지점", "매출", "3개월", "고객 100명"],
   reportFeedback: ["서울지점", "매출", "징계", "해고"],
 };
@@ -66,7 +67,7 @@ function modelOutput(task, data) {
       supportHighlights: output.supportHighlights.map(stripEvidence),
     };
   }
-  if (task === "jobReflectionAnalysis") {
+  if (task === "jobReflectionAnalysis" || task === "completionReflectionAnalysis") {
     const { evidence: _evidence, evidenceCount: _count, generatedAt: _generatedAt, ...output } = data;
     return output;
   }
@@ -78,6 +79,13 @@ function allowedEvidence(task, payload) {
   if (task === "pollCluster") return new Set(payload.responses.map(({ text }) => text));
   if (task === "transferReport") return new Set(payload.surveys.flatMap(({ applied, support }) => [applied, support]));
   if (task === "jobReflectionAnalysis") return new Set(payload.reflections.map(({ workApplicationPoint }) => workApplicationPoint));
+  if (task === "completionReflectionAnalysis") {
+    return new Set(payload.reflections.map(({ goal, reflection, mission }) => [
+      goal ? `입교 전 목표: ${goal}` : null,
+      `수료 성찰: ${reflection}`,
+      mission ? `현업 실천 다짐: ${mission}` : null,
+    ].filter(Boolean).join(" / ")));
+  }
   return new Set();
 }
 
@@ -92,6 +100,7 @@ function returnedEvidence(task, data) {
     ].map(({ quote }) => quote);
   }
   if (task === "jobReflectionAnalysis") return data.evidence.map(({ quote }) => quote);
+  if (task === "completionReflectionAnalysis") return data.evidence.map(({ quote }) => quote);
   return [];
 }
 

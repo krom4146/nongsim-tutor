@@ -138,6 +138,32 @@ function makeJobReflectionOutput(payload) {
   };
 }
 
+function makeCompletionReflectionOutput(payload) {
+  const sourceIds = payload.reflections.map((reflection) => reflection.sourceId);
+  return {
+    summary: "수료 성찰에서 교육 내용을 현업 행동으로 옮기려는 공통 방향이 확인됩니다.",
+    summarySourceIds: sourceIds,
+    goalAlignment: "입교 전 목표와 수료 성찰을 함께 보면 구체적인 실천 상황을 정하려는 변화가 나타납니다.",
+    goalAlignmentSourceIds: sourceIds,
+    themes: [{
+      title: "현업 실천 구체화",
+      count: sourceIds.length,
+      insight: "응답자는 배운 내용을 실제 업무의 행동으로 연결했습니다.",
+      sourceIds,
+    }],
+    practiceCommitments: [{
+      commitment: "다음 업무 상황에서 정한 행동을 실행하고 기록합니다.",
+      sourceIds,
+    }],
+    recommendedActions: [{
+      action: "교육생이 적은 실천 다짐을 후속 현업활용도 조사에서 확인하세요.",
+      sourceIds,
+    }],
+    sampleSize: sourceIds.length,
+    dataWarning: sourceIds.length < 3 ? "응답 수가 적어 공통 경향으로 일반화하기 어렵습니다." : null,
+  };
+}
+
 function makeMissionOutput() {
   return {
     when: "다음 팀 회의가 끝난 직후",
@@ -169,6 +195,7 @@ function makeModelOutput(task, payload) {
     boardAnalysis: makeBoardOutput,
     transferReport: makeTransferOutput,
     jobReflectionAnalysis: makeJobReflectionOutput,
+    completionReflectionAnalysis: makeCompletionReflectionOutput,
     missionDraft: makeMissionOutput,
     reportFeedback: makeReportOutput,
   })[task](payload);
@@ -207,13 +234,14 @@ test("등록된 task는 서로 다른 요청·출력 스키마와 promptVersion�
     "boardAnalysis",
     "transferReport",
     "jobReflectionAnalysis",
+    "completionReflectionAnalysis",
     "missionDraft",
     "reportFeedback",
   ]);
-  assert.equal(new Set(definitions.map(({ requestSchema }) => requestSchema)).size, 8);
-  assert.equal(new Set(definitions.map(({ outputSchema }) => outputSchema)).size, 8);
-  assert.equal(new Set(definitions.map(({ promptVersion }) => promptVersion)).size, 8);
-  assert.equal(new Set(definitions.map(({ outputFormatName }) => outputFormatName)).size, 8);
+  assert.equal(new Set(definitions.map(({ requestSchema }) => requestSchema)).size, 9);
+  assert.equal(new Set(definitions.map(({ outputSchema }) => outputSchema)).size, 9);
+  assert.equal(new Set(definitions.map(({ promptVersion }) => promptVersion)).size, 9);
+  assert.equal(new Set(definitions.map(({ outputFormatName }) => outputFormatName)).size, 9);
   definitions.forEach((definition) => {
     assert.ok(definition.purpose.length > 0);
     assert.match(definition.systemPrompt, /[가-힣]/u);
@@ -221,7 +249,7 @@ test("등록된 task는 서로 다른 요청·출력 스키마와 promptVersion�
   });
 });
 
-test("25개 비식별 fixture가 task 레지스트리와 공통 API를 직접 통과한다", async () => {
+test("28개 비식별 fixture가 task 레지스트리와 공통 API를 직접 통과한다", async () => {
   await withServerEnvironment(async () => {
     for (const [task, taskFixtures] of Object.entries(fixtures.tasks)) {
       const definition = AI_TASK_REGISTRY[task];
@@ -296,6 +324,18 @@ test("근거형 task는 존재하지 않는 sourceIds와 잘못된 집계를 거
     ...jobOutput,
     sampleSize: jobPayload.reflections.length + 1,
   }, jobPayload), /INVALID_SAMPLE_SIZE/u);
+
+  const completionPayload = fixtures.tasks.completionReflectionAnalysis[0].input;
+  const completionOutput = makeCompletionReflectionOutput(completionPayload);
+  assert.doesNotThrow(() => AI_TASK_REGISTRY.completionReflectionAnalysis.validateEvidence(completionOutput, completionPayload));
+  assert.throws(() => AI_TASK_REGISTRY.completionReflectionAnalysis.validateEvidence({
+    ...completionOutput,
+    summarySourceIds: ["completion-unknown"],
+  }, completionPayload), /UNGROUNDED_SOURCE_ID/u);
+  assert.throws(() => AI_TASK_REGISTRY.completionReflectionAnalysis.validateEvidence({
+    ...completionOutput,
+    themes: [{ ...completionOutput.themes[0], count: completionOutput.themes[0].count + 1 }],
+  }, completionPayload), /INVALID_THEME_COUNT/u);
 });
 
 test("boardAnalysis는 현재 Supabase 공개 board-images URL 한 장만 허용한다", async () => {

@@ -755,6 +755,133 @@ export function projectJobReflectionAnalysisResult(result, payload, generatedAt 
   };
 }
 
+const completionReflectionSourceSchema = z.object({
+  sourceId: taskSourceIdSchema,
+  goal: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH).nullable(),
+  answers: z.array(z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH)).max(3),
+  reflection: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH),
+  mission: z.string().trim().min(1).max(MAX_SOURCE_TEXT_LENGTH).nullable(),
+}).strict();
+
+export const completionReflectionAnalysisPayloadSchema = z.object({
+  classId: optionalScopeText,
+  className: optionalScopeText,
+  participantCount: z.number().int().nonnegative().max(100_000),
+  reflections: z.array(completionReflectionSourceSchema).min(1).max(MAX_SOURCE_COUNT),
+}).strict().superRefine((payload, context) => {
+  addUniqueSourceIssues(payload.reflections, context, "reflections");
+  addTotalTextIssue(payload.reflections.map((reflection) => ({
+    text: [
+      reflection.goal,
+      ...reflection.answers,
+      reflection.reflection,
+      reflection.mission,
+    ].filter(Boolean).join(" "),
+  })), context, "reflections");
+  if (payload.participantCount < payload.reflections.length) {
+    context.addIssue({
+      code: "custom",
+      message: "participantCount cannot be smaller than reflection count.",
+      path: ["participantCount"],
+    });
+  }
+});
+
+export const completionReflectionAnalysisRequestSchema = z.object({
+  task: z.literal("completionReflectionAnalysis"),
+  courseCode: courseCodeSchema,
+  payload: completionReflectionAnalysisPayloadSchema,
+}).strict();
+
+export const completionReflectionAnalysisOutputSchema = z.object({
+  summary: z.string().min(1).max(2_000),
+  summarySourceIds: taskSourceIdsSchema,
+  goalAlignment: z.string().min(1).max(2_000),
+  goalAlignmentSourceIds: taskSourceIdsSchema,
+  themes: z.array(z.object({
+    title: z.string().min(1).max(120),
+    count: z.number().int().nonnegative(),
+    insight: z.string().min(1).max(1_000),
+    sourceIds: taskSourceIdsSchema,
+  }).strict()).min(1).max(5),
+  practiceCommitments: z.array(z.object({
+    commitment: z.string().min(1).max(700),
+    sourceIds: taskSourceIdsSchema,
+  }).strict()).min(1).max(5),
+  recommendedActions: z.array(z.object({
+    action: z.string().min(1).max(500),
+    sourceIds: taskSourceIdsSchema,
+  }).strict()).min(1).max(5),
+  sampleSize: z.number().int().nonnegative(),
+  dataWarning: z.string().max(500).nullable(),
+}).strict();
+
+export function normalizeCompletionReflectionAnalysisRequest(value) {
+  const parsed = completionReflectionAnalysisRequestSchema.parse(value);
+  return {
+    task: parsed.task,
+    courseCode: parsed.courseCode.toUpperCase(),
+    payload: {
+      classId: parsed.payload.classId ? normalizeWhitespace(parsed.payload.classId) : null,
+      className: parsed.payload.className ? normalizeWhitespace(parsed.payload.className) : null,
+      participantCount: parsed.payload.participantCount,
+      reflections: parsed.payload.reflections.map((reflection) => ({
+        sourceId: reflection.sourceId,
+        goal: reflection.goal ? redactPersonalData(normalizeWhitespace(reflection.goal)) : null,
+        answers: reflection.answers.map((answer) => redactPersonalData(normalizeWhitespace(answer))),
+        reflection: redactPersonalData(normalizeWhitespace(reflection.reflection)),
+        mission: reflection.mission ? redactPersonalData(normalizeWhitespace(reflection.mission)) : null,
+      })),
+    },
+  };
+}
+
+export function validateCompletionReflectionAnalysisSources(result, payload) {
+  const allowedSourceIds = new Set(payload.reflections.map((reflection) => reflection.sourceId));
+  const referencedSourceIds = [
+    ...result.summarySourceIds,
+    ...result.goalAlignmentSourceIds,
+    ...result.themes.flatMap((theme) => theme.sourceIds),
+    ...result.practiceCommitments.flatMap((commitment) => commitment.sourceIds),
+    ...result.recommendedActions.flatMap((action) => action.sourceIds),
+  ];
+  assertKnownSourceIds(referencedSourceIds, allowedSourceIds);
+  if (result.sampleSize !== payload.reflections.length) throw new Error("INVALID_SAMPLE_SIZE");
+  if (result.themes.some((theme) => theme.count !== new Set(theme.sourceIds).size)) {
+    throw new Error("INVALID_THEME_COUNT");
+  }
+}
+
+export function projectCompletionReflectionAnalysisResult(result, payload, generatedAt = new Date().toISOString()) {
+  validateCompletionReflectionAnalysisSources(result, payload);
+  const reflectionById = new Map(payload.reflections.map((reflection, index) => [reflection.sourceId, {
+    source: "completionReflection",
+    by: `응답자 ${index + 1}`,
+    quote: [
+      reflection.goal ? `입교 전 목표: ${reflection.goal}` : null,
+      `수료 성찰: ${reflection.reflection}`,
+      reflection.mission ? `현업 실천 다짐: ${reflection.mission}` : null,
+    ].filter(Boolean).join(" / "),
+  }]));
+  const evidenceSourceIds = uniqueSourceIds([
+    ...result.summarySourceIds,
+    ...result.goalAlignmentSourceIds,
+    ...result.themes.flatMap((theme) => theme.sourceIds),
+    ...result.practiceCommitments.flatMap((commitment) => commitment.sourceIds),
+    ...result.recommendedActions.flatMap((action) => action.sourceIds),
+  ]).slice(0, EVIDENCE_LIMIT);
+  const dataWarning = payload.reflections.length < 3 && !result.dataWarning
+    ? "응답 수가 적어 목표 달성도나 실천 다짐을 공통 경향으로 일반화하기 어렵습니다."
+    : result.dataWarning;
+  return {
+    ...result,
+    dataWarning,
+    evidence: evidenceSourceIds.map((sourceId) => reflectionById.get(sourceId)),
+    evidenceCount: evidenceSourceIds.length,
+    generatedAt,
+  };
+}
+
 export const missionDraftPayloadSchema = z.object({
   goal: taskSourceSchema.nullable().optional(),
   achievementResponses: z.array(taskSourceSchema).max(20),

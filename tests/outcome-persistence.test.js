@@ -272,7 +272,13 @@ test("교수요원 수료 성찰 카드는 전용 상세 탭으로 이동한다"
   const source = await readFile(new URL("../src/main.jsx", import.meta.url), "utf8");
 
   assert.match(source, /\["achievements",\s*"수료 성찰"\]/);
-  assert.match(source, /tab === "achievements"[^\n]*filteredCourse\.achievements/);
+  assert.match(source, /tab === "achievements"/);
+  assert.match(source, /requestCompletionReflectionAnalysis/);
+  assert.match(source, /수료 성찰 AI 분석/);
+  assert.match(source, /실제 수료 성찰 AI 분석/);
+  assert.match(source, /수료 성찰 AI 분석 · 캐시/);
   assert.match(source, /\["수료 성찰",[^\n]*"achievements",\s*"등록 인원 기준"\]/);
   assert.doesNotMatch(source, /\["수료 성찰",[^\n]*"goals",\s*"등록 인원 기준"\]/);
+  assert.doesNotMatch(source, /\["ai",\s*"AI 분석"\]/);
+  assert.doesNotMatch(source, /openAnalysis\("all"\)/);
 });

@@ -141,13 +141,15 @@ create table if not exists job_reflections (
 create table if not exists public.ai_analyses (
   id uuid primary key default gen_random_uuid(),
   course_code text not null references public.courses(code),
-  task text not null check (
+  task text not null constraint ai_analyses_task_check check (
     task in (
       'goalCohort',
       'goalCompose',
       'pollCluster',
       'boardAnalysis',
       'transferReport',
+      'jobReflectionAnalysis',
+      'completionReflectionAnalysis',
       'missionDraft',
       'reportFeedback'
     )
@@ -163,6 +165,26 @@ create table if not exists public.ai_analyses (
   created_at timestamptz not null default now(),
   unique (course_code, task, input_hash, prompt_version, model)
 );
+
+-- 기존 설치에도 최신 AI task 허용목록을 반영한다. 행과 권한은 변경하지 않는다.
+do $$
+begin
+  alter table public.ai_analyses drop constraint if exists ai_analyses_task_check;
+  alter table public.ai_analyses
+    add constraint ai_analyses_task_check check (
+      task in (
+        'goalCohort',
+        'goalCompose',
+        'pollCluster',
+        'boardAnalysis',
+        'transferReport',
+        'jobReflectionAnalysis',
+        'completionReflectionAnalysis',
+        'missionDraft',
+        'reportFeedback'
+      )
+    );
+end $$;
 
 -- ---------- 2. 인덱스 ----------
 

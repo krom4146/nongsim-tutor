@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { zodTextFormat } from "openai/helpers/zod";
 import {
   boardAnalysisOutputSchema,
+  completionReflectionAnalysisOutputSchema,
   goalCohortOutputSchema,
   goalComposeOutputSchema,
   jobReflectionAnalysisOutputSchema,
@@ -73,6 +74,17 @@ operationsSummary에는 교육원 운영 관점의 일정·진행·수집·후�
 세 요약과 모든 권고 행동에 실제 회고 sourceId를 넣으세요. 강의 선택 수나 응답 수를 언급할 때는 제공된 입력에서 정확히 셀 수 있는 값만 사용하세요.
 보완 강의를 '없음'으로 선택한 응답은 특정 강의의 개선 요구로 해석하지 마세요.
 강사나 교육생 개인을 평가·식별하지 말고, 교육이 현업 성과의 유일한 원인이라고 단정하지 마세요.
+응답이 3건 미만이면 dataWarning에 일반화 한계를 명시하세요.`;
+
+const COMPLETION_REFLECTION_ANALYSIS_SYSTEM_PROMPT = `당신은 농협 교육의 수료 성찰을 분석해 교수요원의 수료일 피드백과 후속 지원을 돕는 도구입니다.
+${COMMON_GROUNDING_RULES}
+입교 전 목표, 수료 성찰 답변, 정리된 성찰문과 현업 실천 다짐을 한 응답자의 묶음으로 보고 과정 수준에서 분석하세요.
+summary에는 교육생들이 무엇을 배우고 어떻게 달라졌다고 서술했는지 입력 근거 범위에서만 요약하세요.
+goalAlignment에는 입교 전 목표와 수료 성찰 사이에서 확인되는 연결점과 미확인 지점을 구분해 작성하세요. 목표 달성을 객관적 성과로 확정하지 마세요.
+themes의 count는 중복을 제거한 sourceIds 개수와 정확히 같아야 합니다.
+practiceCommitments에는 입력에 실제로 작성된 현업 실천 다짐만 묶고, 없는 기한·수치·직무를 만들지 마세요.
+recommendedActions는 수료일 피드백 또는 후속 지원에 바로 활용할 수 있도록 작성하되 모든 항목에 실제 sourceId를 넣으세요.
+개인을 평가하거나 식별하지 말고, 교육이 변화의 유일한 원인이라고 단정하지 마세요.
 응답이 3건 미만이면 dataWarning에 일반화 한계를 명시하세요.`;
 
 const MISSION_DRAFT_SYSTEM_PROMPT = `당신은 농협 교육 참여자가 현업에서 실행할 개인 미션을 작성하도록 돕는 도구입니다.
@@ -165,6 +177,15 @@ export const AI_TASK_PROMPTS = Object.freeze({
     outputFormatName: "job_reflection_analysis",
     maxOutputTokens: 3_000,
     buildUserInput: (payload) => textInput(payload, "job_reflection_data"),
+  }),
+  completionReflectionAnalysis: Object.freeze({
+    purpose: "비식별 수료 성찰을 목표 연결·배움·현업 실천 다짐 관점으로 분석한다.",
+    promptVersion: "completion-reflection-analysis-v1",
+    systemPrompt: COMPLETION_REFLECTION_ANALYSIS_SYSTEM_PROMPT,
+    outputSchema: completionReflectionAnalysisOutputSchema,
+    outputFormatName: "completion_reflection_analysis",
+    maxOutputTokens: 3_000,
+    buildUserInput: (payload) => textInput(payload, "completion_reflection_data"),
   }),
   missionDraft: Object.freeze({
     purpose: "목표·성찰·직무 회고에 근거한 실행 가능한 현업 미션을 작성한다.",

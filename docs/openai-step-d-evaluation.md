@@ -1,6 +1,6 @@
 # OpenAI STEP D 평가·운영 점검 기록
 
-평가일: 2026-08-18 (직무강의 회고 AI 계약 추가: 2026-08-19)
+평가일: 2026-08-18 (직무강의 회고 AI 계약 추가: 2026-08-19, 수료 성찰 AI 계약 추가: 2026-08-20)
 대상: Production `https://nongsim-tutor.vercel.app`, `gpt-5.4-mini`, reasoning effort `medium`
 
 ## 1. 평가 기준
@@ -13,7 +13,7 @@
 
 ## 2. 고정 평가 세트
 
-`docs/fixtures/openai-task-inputs.json`에는 현재 운영 task 8개의 고정 fixture 25건이 있다.
+`docs/fixtures/openai-task-inputs.json`에는 현재 운영 task 9개의 고정 fixture 28건이 있다.
 
 | task | 건수 | 주요 경계 사례 |
 |---|---:|---|
@@ -23,6 +23,7 @@
 | `boardAnalysis` | 3 | 일반, 작은 글자, 판독 불가 |
 | `transferReport` | 3 | 일반, 응답 1건, 조직 지원 장애 집중 |
 | `jobReflectionAnalysis` | 3 | 일반, 응답 1건, 프롬프트 주입 문장·보완 없음 선택 |
+| `completionReflectionAnalysis` | 3 | 일반, 응답 1건, 프롬프트 주입 문장·목표/미션 연결 |
 | `missionDraft` | 3 | 목표+성찰, 목표만, 직무 회고 포함 |
 | `reportFeedback` | 3 | 완전한 보고, 요청 누락, 지나치게 짧은 보고 |
 
@@ -33,18 +34,19 @@
 ### 로컬 결정적 평가
 
 - STEP D 전용 테스트: 10/10 통과
-- 전체 AI 테스트: 59/59 통과
+- 전체 AI 테스트: 62/62 통과
+- 저장·화면·실시간·스탬프를 포함한 전체 테스트: 85/85 통과
 - 성과·회고 저장 회귀 테스트: 8/8 통과
 - `npm run build`: 성공(기존 500 kB 초과 chunk 경고만 유지)
-- 25개 fixture 모두 요청·출력 스키마와 sourceId 검증 통과
+- 28개 fixture 모두 요청·출력 스키마와 sourceId 검증 통과
 - 근거형 task의 화면 근거는 입력 원문과 완전히 일치
 - 원본에 없는 사실을 넣은 음성 대조군은 grounding 평가에서 의도대로 실패
-- 식별자 제거 fixture는 8개 task 모두 통과
+- 식별자 제거 fixture는 9개 task 모두 통과
 - `store:false`, task별 Structured Output, 캐시 hash, 토큰·지연 로그, 저장 실패 경고 확인
 
 ### Production 실제 모델 평가
 
-아래 수치는 2026-08-18의 기존 7개 task 평가 결과다. `jobReflectionAnalysis`의 Production 실제 모델 평가는 배포 후 별도로 확인한다.
+아래 수치는 2026-08-18의 기존 7개 task 평가 결과다. `jobReflectionAnalysis`와 `completionReflectionAnalysis`의 Production 실제 모델 평가는 각 기능 배포 후 별도로 확인한다.
 
 - 텍스트 fixture 19/19 통과, 모두 첫 호출 `source=live`, `persisted=true`
 - 같은 입력을 다시 호출한 task별 표본 6/6은 `source=cache`, `persisted=true`

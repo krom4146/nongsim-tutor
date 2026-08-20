@@ -161,6 +161,31 @@ function groundedOutput(task, payload) {
       dataWarning: sourceIds.length < 3 ? "응답 수가 적어 공통 경향으로 일반화하기 어렵습니다." : null,
     };
   }
+  if (task === "completionReflectionAnalysis") {
+    const sourceIds = payload.reflections.map(({ sourceId }) => sourceId);
+    return {
+      summary: "입력 수료 성찰에서 배운 내용을 현업 행동으로 옮기려는 방향이 나타납니다.",
+      summarySourceIds: sourceIds,
+      goalAlignment: "입교 전 목표와 수료 성찰을 함께 보면 실천 상황을 구체화한 응답이 확인됩니다.",
+      goalAlignmentSourceIds: sourceIds,
+      themes: [{
+        title: "현업 행동 구체화",
+        count: sourceIds.length,
+        insight: "입력 응답에 실제 업무에서 실행할 행동이 포함되어 있습니다.",
+        sourceIds,
+      }],
+      practiceCommitments: [{
+        commitment: "입력에서 정한 다음 업무 행동을 실행하고 기록합니다.",
+        sourceIds,
+      }],
+      recommendedActions: [{
+        action: "입력에 나온 실천 다짐을 후속 현업활용도 조사에서 확인하세요.",
+        sourceIds,
+      }],
+      sampleSize: sourceIds.length,
+      dataWarning: sourceIds.length < 3 ? "응답 수가 적어 공통 경향으로 일반화하기 어렵습니다." : null,
+    };
+  }
   if (task === "missionDraft") {
     return {
       when: "입력에서 언급한 다음 업무 상황에서",
@@ -197,6 +222,13 @@ function inputEvidenceTexts(task, payload) {
   if (task === "pollCluster") return payload.responses.map(({ text }) => text);
   if (task === "transferReport") return payload.surveys.flatMap(({ applied, support }) => [applied, support]);
   if (task === "jobReflectionAnalysis") return payload.reflections.map(({ workApplicationPoint }) => workApplicationPoint);
+  if (task === "completionReflectionAnalysis") {
+    return payload.reflections.map(({ goal, reflection, mission }) => [
+      goal ? `입교 전 목표: ${goal}` : null,
+      `수료 성찰: ${reflection}`,
+      mission ? `현업 실천 다짐: ${mission}` : null,
+    ].filter(Boolean).join(" / "));
+  }
   return [];
 }
 
@@ -211,6 +243,7 @@ function projectedEvidenceTexts(task, projected) {
     ].map(({ quote }) => quote);
   }
   if (task === "jobReflectionAnalysis") return projected.evidence.map(({ quote }) => quote);
+  if (task === "completionReflectionAnalysis") return projected.evidence.map(({ quote }) => quote);
   return [];
 }
 
@@ -229,11 +262,13 @@ test("각 AI task는 3~5개의 고정 fixture와 STEP D 필수 경계 사례를 
     "goal-compose-typo-abbreviation",
     "goal-instruction-as-data",
     "job-reflection-instruction-as-data",
+    "completion-reflection-insufficient",
+    "completion-reflection-instruction-as-data",
     "board-unreadable",
   ].forEach((id) => assert.ok(ids.includes(id), id));
 });
 
-test("25개 고정 fixture는 스키마·sourceId·원문 근거·부족 경고를 통과한다", async () => {
+test("28개 고정 fixture는 스키마·sourceId·원문 근거·부족 경고를 통과한다", async () => {
   await withServerEnvironment(async () => {
     for (const [task, cases] of Object.entries(fixtures.tasks)) {
       const definition = AI_TASK_REGISTRY[task];
@@ -310,6 +345,18 @@ test("명시된 이름·사번·이메일·전화·식별번호는 모든 텍스
           workApplicationPoint: PII_TEXT,
         }],
       },
+      completionReflectionAnalysis: {
+        classId: null,
+        className: null,
+        participantCount: 1,
+        reflections: [{
+          sourceId: "completion-pii-01",
+          goal: PII_TEXT,
+          answers: [PII_TEXT],
+          reflection: PII_TEXT,
+          mission: PII_TEXT,
+        }],
+      },
       missionDraft: { goal: { sourceId: "mission-pii-01", text: PII_TEXT }, achievementResponses: [], jobReflection: null },
       reportFeedback: { scenario: PII_TEXT, difficulty: "보통", turns: [{ speaker: "learner", text: PII_TEXT }] },
       boardAnalysis: { classId: null, className: null, moduleTitle: PII_TEXT, scopeLabel: "1팀", imageUrl: "https://fixture-project.supabase.co/storage/v1/object/public/board-images/NH-2480/pii.jpg" },
@@ -331,6 +378,7 @@ test("빈 데이터·매우 긴 입력·잘못된 장표 URL은 안전하게 거
       { task: "pollCluster", payload: { responses: [] } },
       { task: "transferReport", payload: { surveys: [] } },
       { task: "jobReflectionAnalysis", payload: { reflections: [] } },
+      { task: "completionReflectionAnalysis", payload: { reflections: [] } },
       { task: "missionDraft", payload: { goal: null, achievementResponses: [], jobReflection: null } },
       { task: "reportFeedback", payload: { turns: [] } },
     ];

@@ -112,6 +112,38 @@ export function buildJobReflectionAnalysisRequest(course, participantCount, clas
   };
 }
 
+export function buildCompletionReflectionAnalysisRequest(course, participantCount, classInfo) {
+  const goalByParticipant = new Map((course.goals || []).map((goal) => [goal.participantId, goal]));
+  const missionByParticipant = new Map();
+  [...(course.missions || [])]
+    .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")))
+    .forEach((mission) => missionByParticipant.set(mission.participantId, mission));
+  const reflections = (course.achievements || [])
+    .filter((achievement) => typeof achievement.text === "string" && achievement.text.trim())
+    .map((achievement, index) => {
+      const goal = goalByParticipant.get(achievement.participantId);
+      const mission = missionByParticipant.get(achievement.participantId);
+      return {
+        sourceId: `completion-reflection-${String(index + 1).padStart(2, "0")}`,
+        goal: String(goal?.goalText || goal?.text || "").trim() || null,
+        answers: (achievement.answers || []).map((answer) => String(answer || "").trim()).filter(Boolean),
+        reflection: achievement.text.trim(),
+        mission: String(mission?.missionText || mission?.text || "").trim() || null,
+      };
+    });
+
+  return {
+    task: "completionReflectionAnalysis",
+    courseCode: course.code,
+    payload: {
+      classId: classInfo?.id || null,
+      className: classInfo?.name || null,
+      participantCount: Math.max(reflections.length, Number(participantCount) || 0),
+      reflections,
+    },
+  };
+}
+
 export function buildPollClusterRequest(course, round) {
   const responses = (round?.items || [])
     .filter((item) => typeof item.text === "string" && item.text.trim())
@@ -216,6 +248,13 @@ export function requestTransferReport(course, participantCount, classInfo, optio
 export function requestJobReflectionAnalysis(course, participantCount, classInfo, reflectionDate, options) {
   return requestAI(
     buildJobReflectionAnalysisRequest(course, participantCount, classInfo, reflectionDate),
+    options,
+  );
+}
+
+export function requestCompletionReflectionAnalysis(course, participantCount, classInfo, options) {
+  return requestAI(
+    buildCompletionReflectionAnalysisRequest(course, participantCount, classInfo),
     options,
   );
 }
