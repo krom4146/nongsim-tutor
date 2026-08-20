@@ -46,6 +46,7 @@ import {
   createReportCsvContent,
   isExpectedExportCourse,
 } from "./services/reportExportService";
+import { findActivePollRound, stablePollResponseId } from "./services/pollResponseFlow";
 
 /* 단일 파일 구조 유지: 기존 내부 모듈 함수와 mock 데이터를 main.jsx 안에 포함합니다. */
 
@@ -1703,7 +1704,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
     : personalizedMissionText;
   const classId = student?.classId || null;
   const className = student?.className || "미배정";
-  const activeRound = course.rounds.find((round) => round.kind === "poll" && classId && round.classId === classId && !round.items.some((item) => item.participantId === participantId));
+  const activeRound = findActivePollRound(course.rounds, classId, participantId);
   const boardRounds = course.rounds.filter((round) => round.kind === "board" && classId && round.classId === classId);
   const [view, setView] = useState("home");
   const [goalStep, setGoalStep] = useState(0);
@@ -1829,6 +1830,11 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
       setView("survey");
     }
   }, [phase, mySurvey]);
+
+  useEffect(() => {
+    setAnswer("");
+    setSelectedChoice("");
+  }, [activeRound?.id]);
 
   useEffect(() => {
     let active = true;
@@ -2034,11 +2040,12 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
   const submitAnswer = async () => {
     if (answerPendingRef.current || !activeRound) return;
     if (phase !== "active") return notify("실시간 질문은 교육 중에만 응답할 수 있습니다.");
-    const isObjective = activeRound?.questionType === "objective";
+    const submittedRound = activeRound;
+    const isObjective = submittedRound.questionType === "objective";
     if (isObjective && !selectedChoice) return notify("답변 항목을 선택해주세요.");
     if (!isObjective && !answer.trim()) return notify("답변을 입력해주세요.");
     const item = {
-      id: crypto.randomUUID(),
+      id: stablePollResponseId(course.code, submittedRound.id, participantId),
       participantId,
       by: participantName,
       classId,
@@ -2051,7 +2058,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
     answerPendingRef.current = true;
     setAnswerPending(true);
     try {
-      const result = await onSaveRoundItem(course, activeRound, item);
+      const result = await onSaveRoundItem(course, submittedRound, item);
       if (!result.ok) {
         notify("답변이 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
         return;
@@ -2459,7 +2466,7 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
           <button className="goal-cancel" onClick={closeGoalEditor}>← 돌아가기</button>
         </ActionPanel>
       )}
-      {view === "poll" && (
+      {view === "poll" && activeRound && (
         <ActionPanel title="강사 질문에 답하기" eyebrow="실시간 참여">
           {activeRound.anonymous && <span className="anonymous-badge">🙈 익명</span>}
           <div className="question-box">{activeRound.prompt}</div>
@@ -2467,6 +2474,12 @@ function StudentApp({ course, setCourse, onSaveGoal, onSaveAchievement, onSaveMi
             ? <div className="student-choice-list">{activeRound.options.map((option) => <button key={option} className={selectedChoice === option ? "selected" : ""} onClick={() => setSelectedChoice(option)}>{option}</button>)}</div>
             : <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="정답보다 현장의 생각을 솔직하게 적어주세요." aria-label="강사 질문 답변" />}
           <PanelActions onBack={() => setView("home")} onSave={submitAnswer} saveLabel={answerPending ? "제출 중…" : "답변 제출하기"} disabled={answerPending} />
+        </ActionPanel>
+      )}
+      {view === "poll" && !activeRound && (
+        <ActionPanel title="강사 질문에 답하기" eyebrow="실시간 참여">
+          <p className="helper">응답할 질문이 없습니다. 새 질문이 열리면 오늘 할 일에 표시됩니다.</p>
+          <PanelActions onBack={() => setView("home")} />
         </ActionPanel>
       )}
       {phase === "active" && view === "home" && (
