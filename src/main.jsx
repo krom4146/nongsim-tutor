@@ -3754,7 +3754,8 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
         {tab === "achievements" && <DataList title="수료 성찰" items={filteredCourse.achievements} />}
         {tab === "live" && (
           <section className="content-card">
-            <SectionTitle eyebrow="실시간 참여" title="교육생 질문 생성과 응답 현황" action={<button className="primary compact" disabled={!currentPollRound || analysisPendingRef.current} onClick={() => openAnalysis("poll")}>AI로 묶기</button>} />
+            <SectionTitle eyebrow="실시간 참여" title="교육생 질문 생성과 응답 현황" action={<button className="primary compact" disabled={!currentPollRound || analysisPendingRef.current} onClick={() => openAnalysis("poll")}>최근 응답 질문 AI로 묶기</button>} />
+            {currentPollRound && <div className="current-class-notice"><b>분석 대상</b><span>{selectedClass.name} · “{currentPollRound.prompt}” · 응답 {(currentPollRound.items || []).filter((item) => typeof item.text === "string" && item.text.trim()).length}건</span></div>}
             {operationsOpen
               ? <><CurrentClassNotice className={selectedClass.name} action="질문이 개설됩니다." /><QuestionComposer value={questionDraft} onChange={setQuestionDraft} onSubmit={createQuestion} isSubmitting={roundPending} /></>
               : <ProfessorReadOnlyNotice phase={phase} action="기존 질문과 응답 조회" />}
