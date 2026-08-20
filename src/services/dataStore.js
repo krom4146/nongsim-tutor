@@ -104,6 +104,23 @@ const SURVEY_COLUMNS = [
   "support",
   "submitted_at",
 ].join(",");
+const IDEOLOGY_STAMP_COLUMNS = [
+  "id",
+  "course_code",
+  "participant_id",
+  "class_id",
+  "class_name",
+  "student_name",
+  "stamp_type",
+  "stamp_label",
+  "stamp_icon",
+  "count",
+  "memo",
+  "given_by",
+  "status",
+  "created_at",
+  "cancelled_at",
+].join(",");
 const ACTIVITY_PAYLOAD_PREFIX = "nongsim:v1:";
 const DEFAULT_CLASS_ID = "class-1";
 const DEFAULT_CLASS_NAME = "1반";
@@ -362,6 +379,47 @@ export function surveyFromRow(row) {
     support: row.support || "",
     submittedAt: row.submitted_at,
     createdAt: row.submitted_at,
+  };
+}
+
+export function ideologyStampToRow(courseCode, stamp) {
+  return {
+    id: stamp.id,
+    course_code: courseCode,
+    participant_id: stamp.participantId,
+    class_id: stamp.classId || DEFAULT_CLASS_ID,
+    class_name: stamp.className || DEFAULT_CLASS_NAME,
+    student_name: stamp.studentName || "",
+    stamp_type: stamp.stampType,
+    stamp_label: stamp.stampLabel,
+    stamp_icon: stamp.stampIcon,
+    count: Number(stamp.count || 1),
+    memo: stamp.memo || null,
+    given_by: stamp.givenBy || "교수요원",
+    status: stamp.status || "active",
+    created_at: stamp.createdAt || new Date().toISOString(),
+    cancelled_at: stamp.cancelledAt || null,
+  };
+}
+
+export function ideologyStampFromRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    courseId: row.course_code,
+    participantId: row.participant_id,
+    classId: row.class_id || DEFAULT_CLASS_ID,
+    className: row.class_name || DEFAULT_CLASS_NAME,
+    studentName: row.student_name || "",
+    stampType: row.stamp_type,
+    stampLabel: row.stamp_label,
+    stampIcon: row.stamp_icon,
+    count: Number(row.count || 0),
+    memo: row.memo || "",
+    givenBy: row.given_by || "교수요원",
+    status: row.status || "active",
+    createdAt: row.created_at,
+    ...(row.cancelled_at ? { cancelledAt: row.cancelled_at } : {}),
   };
 }
 
@@ -841,6 +899,171 @@ export async function saveSurvey(course, survey) {
     return { ok: true, survey: surveyFromRow(data) };
   } catch (error) {
     return { ok: false, error: errorMessage(error) };
+  }
+}
+
+function normalizeIdeologyStamp(stamp) {
+  return {
+    ...stamp,
+    courseId: stamp.courseId || stamp.courseCode,
+    participantId: stamp.participantId || stamp.studentId,
+    classId: stamp.classId || DEFAULT_CLASS_ID,
+    className: stamp.className || DEFAULT_CLASS_NAME,
+    studentName: stamp.studentName || stamp.name || "",
+    count: Number(stamp.count || 1),
+    givenBy: stamp.givenBy || "교수요원",
+    status: stamp.status || "active",
+    createdAt: stamp.createdAt || new Date().toISOString(),
+  };
+}
+
+async function requestIdeologyStampApi(action, payload = {}) {
+  const response = await fetch("/api/stamps", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body?.ok) {
+    const error = new Error(body?.error?.message || "스탬프 서버 요청에 실패했습니다.");
+    error.code = body?.error?.code;
+    throw error;
+  }
+  return body.data;
+}
+
+export async function authenticateProfessor(password) {
+  if (DATA_MODE === "local") return { ok: true, professorToken: "local" };
+  try {
+    const data = await requestIdeologyStampApi("login", { password });
+    return { ok: true, professorToken: data.professorToken };
+  } catch (error) {
+    return { ok: false, code: error.code, error: errorMessage(error) };
+  }
+}
+
+export async function getIdeologyStamps(courseCodes = [], access = {}) {
+  const codes = [...new Set((courseCodes || []).filter(Boolean))];
+  if (!codes.length) return [];
+
+  if (DATA_MODE === "local") {
+    const saved = await getCollection("stamps");
+    return (Array.isArray(saved) ? saved : [])
+      .map(normalizeIdeologyStamp)
+      .filter((stamp) => codes.includes(stamp.courseId));
+  }
+
+  if (access.professorToken) {
+    const data = await requestIdeologyStampApi("list", {
+      professorToken: access.professorToken,
+      courseCodes: codes,
+    });
+    return data.stamps || [];
+  }
+  if (codes.length === 1 && access.participantId && access.reentryToken) {
+    const data = await requestIdeologyStampApi("mine", {
+      courseCode: codes[0],
+      participantId: access.participantId,
+      reentryToken: access.reentryToken,
+    });
+    return data.stamps || [];
+  }
+  return [];
+}
+
+export async function saveIdeologyStamp(course, stamp, professorToken = "") {
+  if (!course?.code || !stamp?.id || !stamp.participantId || !stamp.stampType) {
+    return { ok: false, error: "Stamp course, participant, and type are required." };
+  }
+  const normalized = normalizeIdeologyStamp({ ...stamp, courseId: course.code });
+
+  if (DATA_MODE === "local") {
+    const saved = await getCollection("stamps");
+    const stamps = mergeById(Array.isArray(saved) ? saved : [], normalized);
+    const result = await setCollection("stamps", stamps);
+    if (result.ok) notifyCourseChanged(course.code, { table: "ideology_stamps" });
+    return result.ok ? { ...result, stamp: normalized } : result;
+  }
+
+  try {
+    const data = await requestIdeologyStampApi("save", {
+      professorToken,
+      courseCode: course.code,
+      stamp: {
+        id: normalized.id,
+        participantId: normalized.participantId,
+        stampType: normalized.stampType,
+        count: normalized.count,
+        memo: normalized.memo || "",
+        status: normalized.status,
+        createdAt: normalized.createdAt,
+        ...(normalized.cancelledAt ? { cancelledAt: normalized.cancelledAt } : {}),
+      },
+    });
+    return { ok: true, stamp: data.stamp };
+  } catch (error) {
+    return { ok: false, code: error.code, error: errorMessage(error) };
+  }
+}
+
+export async function cancelIdeologyStamp(course, stamp, professorToken = "") {
+  if (!course?.code || !stamp?.id) return { ok: false, error: "Stamp id is required." };
+  const cancelledAt = new Date().toISOString();
+
+  if (DATA_MODE === "local") {
+    const saved = await getCollection("stamps");
+    let cancelledStamp = null;
+    const stamps = (Array.isArray(saved) ? saved : []).map((item) => {
+      if (item.id !== stamp.id || (item.courseId || item.courseCode) !== course.code) return item;
+      cancelledStamp = normalizeIdeologyStamp({ ...item, status: "cancelled", cancelledAt });
+      return cancelledStamp;
+    });
+    if (!cancelledStamp) return { ok: false, error: "Stamp not found." };
+    const result = await setCollection("stamps", stamps);
+    if (result.ok) notifyCourseChanged(course.code, { table: "ideology_stamps" });
+    return result.ok ? { ...result, stamp: cancelledStamp } : result;
+  }
+
+  try {
+    const data = await requestIdeologyStampApi("cancel", {
+      professorToken,
+      courseCode: course.code,
+      stampId: stamp.id,
+    });
+    return { ok: true, stamp: data.stamp };
+  } catch (error) {
+    return { ok: false, code: error.code, error: errorMessage(error) };
+  }
+}
+
+export async function migrateLegacyIdeologyStamps(courseCodes = [], professorToken = "") {
+  if (DATA_MODE !== "supabase") return { ok: true, migrated: 0 };
+  const codes = [...new Set((courseCodes || []).filter(Boolean))];
+  if (!codes.length) return { ok: true, migrated: 0 };
+  const saved = await getCollection("stamps");
+  const legacyStamps = (Array.isArray(saved) ? saved : [])
+    .map(normalizeIdeologyStamp)
+    .filter((stamp) => stamp.id && stamp.participantId && stamp.stampType && codes.includes(stamp.courseId));
+  if (!legacyStamps.length) return { ok: true, migrated: 0 };
+
+  try {
+    const data = await requestIdeologyStampApi("migrate", {
+      professorToken,
+      stamps: legacyStamps.map((stamp) => ({
+        courseId: stamp.courseId,
+        id: stamp.id,
+        participantId: stamp.participantId,
+        stampType: stamp.stampType,
+        count: stamp.count,
+        memo: stamp.memo || "",
+        status: stamp.status,
+        createdAt: stamp.createdAt,
+        ...(stamp.cancelledAt ? { cancelledAt: stamp.cancelledAt } : {}),
+      })),
+    });
+    return { ok: true, migrated: data.stamps?.length || 0 };
+  } catch (error) {
+    return { ok: false, code: error.code, error: errorMessage(error) };
   }
 }
 

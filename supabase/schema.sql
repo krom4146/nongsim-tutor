@@ -3,7 +3,7 @@
 -- 이 파일은 현재 DB 구조의 원본 기록입니다.
 -- 프로젝트를 새로 만들 경우 이 파일 전체를 SQL Editor에 붙여넣어 실행하면
 -- 동일한 구조가 복원됩니다.
--- 최종 수정: 2026-08-19 (직무강의 회고 저장·조회 및 실시간 반영)
+-- 최종 수정: 2026-08-20 (이념과정 스탬프 저장·조회 및 실시간 반영)
 -- =====================================================================
 
 -- ---------- 1. 테이블 ----------
@@ -96,6 +96,27 @@ create table if not exists achievements (
   constraint achievements_course_participant_key unique (course_code, participant_id)
 );
 
+-- 통합 농협이념과정 스탬프: 지급·취소 이력을 보존하고 교육생 화면에 실시간 반영한다.
+create table if not exists ideology_stamps (
+  id text primary key,
+  course_code text not null references courses(code) on delete cascade,
+  participant_id text not null,
+  class_id text not null,
+  class_name text not null,
+  student_name text not null,
+  stamp_type text not null check (
+    stamp_type in ('participation', 'cooperation', 'consideration', 'reflection', 'olympic', 'action')
+  ),
+  stamp_label text not null,
+  stamp_icon text not null,
+  count smallint not null check (count between 1 and 3),
+  memo text,
+  given_by text not null default '교수요원',
+  status text not null default 'active' check (status in ('active', 'cancelled')),
+  created_at timestamptz not null default now(),
+  cancelled_at timestamptz
+);
+
 -- 직무강의 회고: 과정·참여자·강의일별 1건. 교육생의 동시 제출은 전용 행으로 분리한다.
 create table if not exists job_reflections (
   id text primary key,
@@ -150,6 +171,8 @@ create index if not exists idx_items_round on round_items(round_id);
 create index if not exists idx_goals_course on goals(course_code);
 create index if not exists idx_surveys_course on surveys(course_code);
 create index if not exists idx_missions_course on missions(course_code);
+create index if not exists idx_ideology_stamps_course_created
+  on ideology_stamps(course_code, created_at desc);
 create index if not exists idx_job_reflections_course_date_class
   on job_reflections(course_code, reflection_date, class_id);
 create index if not exists ai_analyses_course_created_idx
@@ -164,6 +187,7 @@ alter table goals       enable row level security;
 alter table achievements enable row level security;
 alter table surveys     enable row level security;
 alter table missions    enable row level security;
+alter table ideology_stamps enable row level security;
 alter table job_reflections enable row level security;
 alter table public.ai_analyses enable row level security;
 
@@ -179,6 +203,7 @@ drop policy if exists "demo_all_goals" on goals;
 drop policy if exists "demo_all_achievements" on achievements;
 drop policy if exists "demo_all_surveys" on surveys;
 drop policy if exists "demo_all_missions" on missions;
+drop policy if exists "demo_all_ideology_stamps" on ideology_stamps;
 drop policy if exists "demo_all_job_reflections" on job_reflections;
 
 drop policy if exists "demo_select_courses" on courses;
@@ -200,6 +225,9 @@ drop policy if exists "demo_insert_surveys" on surveys;
 drop policy if exists "demo_select_missions" on missions;
 drop policy if exists "demo_insert_missions" on missions;
 drop policy if exists "demo_update_missions" on missions;
+drop policy if exists "demo_select_ideology_stamps" on ideology_stamps;
+drop policy if exists "demo_insert_ideology_stamps" on ideology_stamps;
+drop policy if exists "demo_update_ideology_stamps" on ideology_stamps;
 drop policy if exists "demo_select_job_reflections" on job_reflections;
 drop policy if exists "demo_insert_job_reflections" on job_reflections;
 drop policy if exists "demo_update_job_reflections" on job_reflections;
@@ -282,6 +310,11 @@ to anon, authenticated;
 -- 자유서술식 회고는 공개 키에서 직접 접근하지 않고 서버 프록시만 사용한다.
 revoke all on table public.job_reflections from anon, authenticated;
 grant select, insert, update on table public.job_reflections to service_role;
+
+-- 스탬프 지급 이력은 교수요원 서버 프록시와 검증된 교육생 조회만 사용한다.
+revoke all on table public.ideology_stamps from anon, authenticated;
+revoke all on table public.ideology_stamps from service_role;
+grant select, insert, update on table public.ideology_stamps to service_role;
 
 -- AI 분석은 서버 전용 secret key가 사용하는 service_role만 접근한다.
 revoke all on table public.ai_analyses from anon, authenticated;

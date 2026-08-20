@@ -3,6 +3,7 @@ import { DATA_MODE, getSupabaseClient } from "./supabaseClient.js";
 const COURSE_CHANGED_EVENT = "nongsim-course-changed";
 const COURSES_KEY = "nongsim-courses-v3";
 const ACTIVE_COURSE_KEY = "nongsim-course-v3";
+const IDEOLOGY_STAMPS_KEY = "ideologyStamps";
 const COURSE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
 const REALTIME_DEBOUNCE_MS = 180;
 const FOLLOWUP_DEMO_BROADCAST_EVENT = "followup-demo-notification";
@@ -26,9 +27,9 @@ function callOnChange(onChange, code, detail) {
   });
 }
 
-export function notifyCourseChanged(code) {
+export function notifyCourseChanged(code, detail = {}) {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(COURSE_CHANGED_EVENT, { detail: { code } }));
+  window.dispatchEvent(new CustomEvent(COURSE_CHANGED_EVENT, { detail: { code, ...detail } }));
 }
 
 export function subscribeCourse(code, onChange) {
@@ -113,12 +114,20 @@ export function subscribeCourse(code, onChange) {
 
   const handleCourseChange = (event) => {
     if (!event.detail?.code || event.detail.code === code) {
-      callOnChange(onChange, event.detail?.code || code, { type: "change", source: "local" });
+      callOnChange(onChange, event.detail?.code || code, {
+        type: "change",
+        source: "local",
+        table: event.detail?.table,
+      });
     }
   };
   const handleStorage = (event) => {
-    if (event.key === COURSES_KEY || event.key === ACTIVE_COURSE_KEY) {
-      callOnChange(onChange, code, { type: "change", source: "storage" });
+    if (event.key === COURSES_KEY || event.key === ACTIVE_COURSE_KEY || event.key === IDEOLOGY_STAMPS_KEY) {
+      callOnChange(onChange, code, {
+        type: "change",
+        source: "storage",
+        table: event.key === IDEOLOGY_STAMPS_KEY ? "ideology_stamps" : undefined,
+      });
     }
   };
 

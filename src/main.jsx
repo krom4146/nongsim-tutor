@@ -3,14 +3,19 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import {
   archiveCourse,
+  authenticateProfessor,
   bumpReaction as bumpStoredReaction,
+  cancelIdeologyStamp as cancelStoredIdeologyStamp,
   getCollection,
   getCourse,
   getCourses,
+  getIdeologyStamps,
   getJobReflection as getStoredJobReflection,
+  migrateLegacyIdeologyStamps,
   saveCourse,
   saveAchievement as saveStoredAchievement,
   saveGoal as saveStoredGoal,
+  saveIdeologyStamp as saveStoredIdeologyStamp,
   saveJobReflection as saveStoredJobReflection,
   saveMission as saveStoredMission,
   saveRound,
@@ -55,8 +60,7 @@ const DEPLOY_COMMIT_SHA = typeof __APP_COMMIT_SHA__ === "string" ? __APP_COMMIT_
 /* ---- inlined from src\data.js ---- */
 const COURSE_CODE = "NH-2480";
 
-// TODO: 로컬 시연 전용 값입니다. 실제 배포에서는 서버 인증으로 교체하고 클라이언트 코드에 비밀번호를 두지 않습니다.
-const ADMIN_PASSWORD = "nh1234";
+const LOCAL_ADMIN_PASSWORD = "nh1234";
 
 const courseTypes = {
   ideology: "통합 농협이념과정",
@@ -1013,6 +1017,7 @@ function App() {
   const presetRole = params.get("role");
   const presetCode = params.get("code") || "";
   const initialCourseRef = useRef(normalizeCourse(seedCourse));
+  const legacyStampMigrationAttemptedRef = useRef(false);
   const [storageReady, setStorageReady] = useState(false);
   const [courseLoadStatus, setCourseLoadStatus] = useState("loading");
   const [splashPhase, setSplashPhase] = useState("visible");
@@ -1030,11 +1035,17 @@ function App() {
   const [toast, setToast] = useState("");
   const [showProfessorLogin, setShowProfessorLogin] = useState(false);
   const [professorPassword, setProfessorPassword] = useState("");
+  const [professorSessionToken, setProfessorSessionToken] = useState("");
   const [professorStartTab, setProfessorStartTab] = useState("dashboard");
   const [ideologyStamps, setIdeologyStamps] = useState([]);
   const [entryPending, setEntryPending] = useState(false);
   const [realtimeStatus, setRealtimeStatus] = useState(DATA_MODE === "local" ? "LOCAL" : "IDLE");
   const entryCourse = courses.find((item) => item.code === code.trim().toUpperCase());
+  const ideologyStampAccess = role === "professor"
+    ? { professorToken: professorSessionToken }
+    : role === "student" && studentProfile
+      ? { participantId: studentProfile.participantId || studentProfile.id, reentryToken: studentProfile.reentryToken }
+      : {};
 
   const applyActivityUpdate = (courseCode, update) => {
     setCourseState((current) => current?.code === courseCode ? update(current) : current);
@@ -1124,6 +1135,34 @@ function App() {
     return { ...result, jobReflection: savedJobReflection };
   };
 
+  const saveIdeologyStamp = async (courseSnapshot, stamp) => {
+    const result = await saveStoredIdeologyStamp(courseSnapshot, stamp, professorSessionToken);
+    if (!result.ok && result.code === "UNAUTHORIZED") {
+      setProfessorSessionToken("");
+      setRole(null);
+      setShowProfessorLogin(true);
+      setToast("교수요원 인증이 만료되었습니다. 다시 인증해 주세요.");
+      return result;
+    }
+    if (!result.ok) return result;
+    setIdeologyStamps((items) => mergeEntityById(items, result.stamp));
+    return result;
+  };
+
+  const cancelIdeologyStamp = async (courseSnapshot, stamp) => {
+    const result = await cancelStoredIdeologyStamp(courseSnapshot, stamp, professorSessionToken);
+    if (!result.ok && result.code === "UNAUTHORIZED") {
+      setProfessorSessionToken("");
+      setRole(null);
+      setShowProfessorLogin(true);
+      setToast("교수요원 인증이 만료되었습니다. 다시 인증해 주세요.");
+      return result;
+    }
+    if (!result.ok) return result;
+    setIdeologyStamps((items) => mergeEntityById(items, result.stamp));
+    return result;
+  };
+
   const reloadCourseData = useCallback(async (courseCode) => {
     try {
       const nextCourse = await getCourse(courseCode);
@@ -1182,7 +1221,8 @@ function App() {
     async function loadStoredData() {
       const seedResult = await seedDemoCourse();
       if (!seedResult.ok) throw new Error(seedResult.error);
-      const [savedCourses, savedStamps] = await Promise.all([getCourses(), getCollection("stamps")]);
+      const savedCourses = await getCourses();
+      const savedStamps = await getIdeologyStamps(savedCourses.map((item) => item.code));
       if (!active) return;
       const nextCourses = savedCourses.length
         ? savedCourses
@@ -1193,13 +1233,8 @@ function App() {
       setCourses(nextCourses);
       setCourseState(selected);
       setCourseLoadStatus(nextCourses.length ? "ready" : "empty");
-      setIdeologyStamps(Array.isArray(savedStamps) ? savedStamps.map((item) => ({
-        ...item,
-        classId: item.classId || "class-1",
-        className: item.className || "1반",
-        status: item.status || "active",
-      })) : []);
-      if (presetRole === "professor" && nextCourses.some((item) => item.code === presetCode.toUpperCase())) setRole("professor");
+      setIdeologyStamps(savedStamps);
+      if (presetRole === "professor" && nextCourses.some((item) => item.code === presetCode.toUpperCase())) setShowProfessorLogin(true);
       setStorageReady(true);
     }
     loadStoredData().catch((error) => {
@@ -1215,9 +1250,37 @@ function App() {
   }, [presetCode, presetRole]);
 
   useEffect(() => {
-    if (!storageReady) return;
-    void setCollection("stamps", ideologyStamps);
-  }, [ideologyStamps, storageReady]);
+    if (!course?.code || !storageReady || !role) return;
+    if (DATA_MODE === "supabase"
+      && ((role === "professor" && !professorSessionToken)
+        || (role === "student" && (!ideologyStampAccess.participantId || !ideologyStampAccess.reentryToken)))) return;
+    let active = true;
+    getIdeologyStamps([course.code], ideologyStampAccess).then((nextStamps) => {
+      if (!active) return;
+      setIdeologyStamps((items) => [
+        ...items.filter((item) => item.courseId !== course.code),
+        ...nextStamps,
+      ]);
+    }).catch((error) => {
+      console.warn("스탬프 지급 이력을 불러오지 못했습니다.", error);
+      if (active) setToast("스탬프 지급 이력을 불러오지 못했습니다. 다시 시도해 주세요.");
+    });
+    return () => { active = false; };
+  }, [course?.code, ideologyStampAccess.participantId, ideologyStampAccess.reentryToken, professorSessionToken, role, storageReady]);
+
+  useEffect(() => {
+    if (DATA_MODE !== "supabase" || role !== "professor" || !professorSessionToken || !storageReady || legacyStampMigrationAttemptedRef.current) return;
+    legacyStampMigrationAttemptedRef.current = true;
+    let active = true;
+    migrateLegacyIdeologyStamps(courses.map((item) => item.code), professorSessionToken).then(async (result) => {
+      if (!active || !result.ok || !result.migrated) return;
+      const migratedStamps = await getIdeologyStamps(courses.map((item) => item.code), { professorToken: professorSessionToken });
+      if (active) setIdeologyStamps(migratedStamps);
+    }).catch((error) => {
+      console.warn("기존 브라우저의 스탬프 지급 이력을 이전하지 못했습니다.", error);
+    });
+    return () => { active = false; };
+  }, [courses, professorSessionToken, role, storageReady]);
 
   useEffect(() => {
     if (!course?.code || !storageReady || !role) {
@@ -1236,6 +1299,15 @@ function App() {
         return;
       }
       try {
+        if (detail.table === "ideology_stamps" || detail.table === "courses") {
+          const nextStamps = await getIdeologyStamps([course.code], ideologyStampAccess);
+          if (!active) return;
+          setIdeologyStamps((items) => [
+            ...items.filter((item) => item.courseId !== course.code),
+            ...nextStamps,
+          ]);
+          if (detail.table === "ideology_stamps") return;
+        }
         const nextCourse = await getCourse(course.code);
         if (!active || !nextCourse) return;
         setCourses((items) => items.map((item) => item.code === nextCourse.code ? nextCourse : item));
@@ -1251,7 +1323,7 @@ function App() {
       active = false;
       unsubscribe();
     };
-  }, [course?.code, storageReady, role]);
+  }, [course?.code, ideologyStampAccess.participantId, ideologyStampAccess.reentryToken, professorSessionToken, storageReady, role]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1436,7 +1508,11 @@ function App() {
 
   const enter = async (nextRole) => {
     const enteredCode = code.trim().toUpperCase();
-    if (nextRole === "professor" && !enteredCode) {
+    if (nextRole === "professor") {
+      if (!privacyAccepted) {
+        setToast("정보 입력 주의사항을 확인해주세요.");
+        return;
+      }
       setShowProfessorLogin(true);
       return;
     }
@@ -1514,19 +1590,59 @@ function App() {
     }
   };
 
-  const enterProfessorAdmin = () => {
+  const enterProfessorAdmin = async () => {
     if (!privacyAccepted) {
       setToast("정보 입력 주의사항을 확인해주세요.");
       return;
     }
-    if (professorPassword !== ADMIN_PASSWORD) {
-      setToast("교수요원 관리자 비밀번호가 맞지 않습니다.");
-      return;
+    setEntryPending(true);
+    try {
+      let authResult;
+      if (DATA_MODE === "local") {
+        authResult = professorPassword === LOCAL_ADMIN_PASSWORD
+          ? { ok: true, professorToken: "local" }
+          : { ok: false, error: "교수요원 관리자 비밀번호가 맞지 않습니다." };
+      } else {
+        authResult = await authenticateProfessor(professorPassword);
+      }
+      if (!authResult.ok) {
+        setToast(authResult.code === "SERVER_MISCONFIGURED"
+          ? "교수요원 인증 서버 설정을 확인해 주세요."
+          : "교수요원 관리자 비밀번호가 맞지 않습니다.");
+        return;
+      }
+
+      const enteredCode = code.trim().toUpperCase();
+      if (enteredCode) {
+        const matchedCourse = DATA_MODE === "local"
+          ? courses.find((item) => item.code === enteredCode) || await getCourse(enteredCode)
+          : await getCourse(enteredCode);
+        if (!matchedCourse) {
+          setToast("해당 과정 코드를 찾을 수 없습니다. 과정 코드를 다시 확인해 주세요.");
+          return;
+        }
+        setCourses((items) => [...items.filter((item) => item.code !== matchedCourse.code), matchedCourse]);
+        selectCourse(matchedCourse);
+        setProfessorStartTab("dashboard");
+      } else {
+        setProfessorStartTab("create");
+      }
+      setProfessorSessionToken(authResult.professorToken);
+      setShowProfessorLogin(false);
+      setProfessorPassword("");
+      setRole("professor");
+    } catch (error) {
+      console.warn("교수요원 인증에 실패했습니다.", error);
+      setToast("교수요원 인증에 실패했습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+    } finally {
+      setEntryPending(false);
     }
-    setShowProfessorLogin(false);
-    setProfessorPassword("");
-    setProfessorStartTab("create");
-    setRole("professor");
+  };
+
+  const exitRole = () => {
+    setRole(null);
+    setProfessorSessionToken("");
+    legacyStampMigrationAttemptedRef.current = false;
   };
 
   if (splashPhase !== "hidden") {
@@ -1603,18 +1719,18 @@ function App() {
           {showProfessorLogin && (
             <div className="professor-login-panel">
               <span className="eyebrow">교수요원 관리자 인증</span>
-              <h3>새 과정 등록</h3>
-              <p>과정 코드가 없는 경우 관리자 비밀번호로 입장하세요.</p>
+              <h3>{code.trim() ? "과정 관리" : "새 과정 등록"}</h3>
+              <p>교수요원 기능은 관리자 비밀번호 인증 후 이용할 수 있습니다.</p>
               <input
                 type="password"
                 value={professorPassword}
                 onChange={(e) => setProfessorPassword(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && enterProfessorAdmin()}
+                onKeyDown={(e) => e.key === "Enter" && void enterProfessorAdmin()}
                 placeholder="관리자 비밀번호"
                 aria-label="관리자 비밀번호 입력"
               />
-              <button className="primary" onClick={enterProfessorAdmin}>인증 후 과정 등록</button>
-              <small>로컬 시연 비밀번호: <b>{ADMIN_PASSWORD}</b></small>
+              <button className="primary" disabled={entryPending} onClick={enterProfessorAdmin}>{entryPending ? "인증 중…" : "인증 후 입장"}</button>
+              <small>{DATA_MODE === "local" ? <>로컬 시연 비밀번호: <b>{LOCAL_ADMIN_PASSWORD}</b></> : "운영 비밀번호는 서버 환경변수로 안전하게 확인합니다."}</small>
             </div>
           )}
           <DeploymentVersion />
@@ -1627,11 +1743,11 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Header course={course} role={role} onHome={() => setRole(null)} onExit={() => setRole(null)} />
+      <Header course={course} role={role} onHome={exitRole} onExit={exitRole} />
       {DATA_MODE === "supabase" && course && <RealtimeStatus status={realtimeStatus} />}
       {role === "student"
-        ? <StudentApp course={course} setCourse={setCourse} onSaveGoal={saveOutcomeGoal} onSaveAchievement={saveOutcomeAchievement} onSaveMission={saveOutcomeMission} onSaveSurvey={saveOutcomeSurvey} onSaveRoundItem={saveActivityItem} onSaveJobReflection={saveActivityJobReflection} student={studentProfile} ideologyStamps={ideologyStamps} onExit={() => setRole(null)} notify={setToast} />
-        : <ProfessorApp course={course || initialCourseRef.current} setCourse={setCourse} onReloadCourse={reloadCourseData} onSaveRound={saveActivityRound} onBumpReaction={changeActivityReaction} courses={courses} ideologyStamps={ideologyStamps} setIdeologyStamps={setIdeologyStamps} onCreateCourse={createRegisteredCourse} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onArchiveCourse={archiveRegisteredCourse} initialTab={course ? professorStartTab : "create"} onExit={() => setRole(null)} notify={setToast} />}
+        ? <StudentApp course={course} setCourse={setCourse} onSaveGoal={saveOutcomeGoal} onSaveAchievement={saveOutcomeAchievement} onSaveMission={saveOutcomeMission} onSaveSurvey={saveOutcomeSurvey} onSaveRoundItem={saveActivityItem} onSaveJobReflection={saveActivityJobReflection} student={studentProfile} ideologyStamps={ideologyStamps} onExit={exitRole} notify={setToast} />
+        : <ProfessorApp course={course || initialCourseRef.current} setCourse={setCourse} onReloadCourse={reloadCourseData} onSaveRound={saveActivityRound} onBumpReaction={changeActivityReaction} courses={courses} ideologyStamps={ideologyStamps} onGiveStamp={saveIdeologyStamp} onCancelStamp={cancelIdeologyStamp} onCreateCourse={createRegisteredCourse} onSelectCourse={selectCourse} onUpdateCourse={updateRegisteredCourse} onArchiveCourse={archiveRegisteredCourse} initialTab={course ? professorStartTab : "create"} onExit={exitRole} notify={setToast} />}
       {toast && <Toast>{toast}</Toast>}
     </div>
   );
@@ -2700,7 +2816,7 @@ function collectCourseStudents(course) {
   })).values()];
 }
 
-function ProfessorStampManager({ course, stamps, setStamps, notify }) {
+function ProfessorStampManager({ course, stamps, onGiveStamp, onCancelStamp, notify }) {
   const [stampTab, setStampTab] = useState("give");
   const [classFilter, setClassFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -2708,18 +2824,27 @@ function ProfessorStampManager({ course, stamps, setStamps, notify }) {
   const [stampType, setStampType] = useState(STAMP_TYPES[0].type);
   const [count, setCount] = useState(1);
   const [memo, setMemo] = useState("");
-  const students = collectCourseStudents(course);
-  const visibleStudents = students.filter((student) => (classFilter === "all" || student.classId === classFilter) && (!search.trim() || student.name.includes(search.trim())));
-  const selectedStudent = students.find((student) => `${student.id}:${student.classId}` === selectedStudentId);
+  const [pendingStamp, setPendingStamp] = useState(null);
+  const [stampActionPending, setStampActionPending] = useState(false);
+  const stampActionInFlightRef = useRef(false);
+  const students = useMemo(() => collectCourseStudents(course), [course]);
+  const visibleStudents = useMemo(() => students.filter((student) =>
+    (classFilter === "all" || student.classId === classFilter)
+    && (!search.trim() || student.name.includes(search.trim()))), [classFilter, search, students]);
+  const selectedStudent = useMemo(() => students.find((student) =>
+    `${student.id}:${student.classId}` === selectedStudentId), [selectedStudentId, students]);
   const activeStamp = STAMP_TYPES.find((item) => item.type === stampType) || STAMP_TYPES[0];
-  const rankingStudents = classFilter === "all" ? students : students.filter((student) => student.classId === classFilter);
-  const ranking = buildStampRanking(stamps, rankingStudents);
-  const history = [...stamps].filter((item) => classFilter === "all" || item.classId === classFilter).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const rankingStudents = useMemo(() => classFilter === "all"
+    ? students
+    : students.filter((student) => student.classId === classFilter), [classFilter, students]);
+  const ranking = useMemo(() => buildStampRanking(stamps, rankingStudents), [rankingStudents, stamps]);
+  const history = useMemo(() => [...stamps]
+    .filter((item) => classFilter === "all" || item.classId === classFilter)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [classFilter, stamps]);
 
-  const giveStamp = () => {
+  const requestStampConfirmation = () => {
     if (!selectedStudent) return notify("스탬프를 받을 교육생을 선택해주세요.");
-    if (!window.confirm(`${selectedStudent.name} 교육생에게 ${activeStamp.shortLabel} 스탬프 ${count}개를 지급하시겠습니까?`)) return;
-    const record = {
+    setPendingStamp({
       id: uid("stamp"),
       courseId: course.code,
       participantId: selectedStudent.id,
@@ -2734,15 +2859,51 @@ function ProfessorStampManager({ course, stamps, setStamps, notify }) {
       givenBy: "교수요원",
       status: "active",
       createdAt: now(),
-    };
-    setStamps((items) => [...items, record]);
-    setMemo("");
-    notify(`${selectedStudent.name} 교육생에게 ${activeStamp.shortLabel} 스탬프 ${count}개를 지급했습니다.`);
+    });
   };
 
-  const cancelStamp = (record) => {
+  const giveStamp = async () => {
+    if (!pendingStamp || stampActionInFlightRef.current) return;
+    stampActionInFlightRef.current = true;
+    setStampActionPending(true);
+    let result;
+    try {
+      result = await onGiveStamp(course, pendingStamp);
+    } catch (error) {
+      console.error("스탬프 지급 저장에 실패했습니다.", error);
+      result = { ok: false };
+    } finally {
+      stampActionInFlightRef.current = false;
+      setStampActionPending(false);
+    }
+    if (!result.ok) {
+      if (result.code !== "UNAUTHORIZED") notify("스탬프가 저장되지 않았습니다. 연결을 확인한 뒤 다시 시도해 주세요.");
+      return;
+    }
+    setMemo("");
+    setPendingStamp(null);
+    notify(`${result.stamp.studentName} 교육생에게 ${result.stamp.stampLabel.replace(" 스탬프", "")} 스탬프 ${result.stamp.count}개를 지급했습니다.`);
+  };
+
+  const cancelStamp = async (record) => {
+    if (stampActionInFlightRef.current) return;
     if (!window.confirm(`${record.studentName} 교육생의 ${record.stampLabel} 지급을 취소할까요?`)) return;
-    setStamps((items) => items.map((item) => item.id === record.id ? { ...item, status: "cancelled", cancelledAt: now() } : item));
+    stampActionInFlightRef.current = true;
+    setStampActionPending(true);
+    let result;
+    try {
+      result = await onCancelStamp(course, record);
+    } catch (error) {
+      console.error("스탬프 지급 취소 저장에 실패했습니다.", error);
+      result = { ok: false };
+    } finally {
+      stampActionInFlightRef.current = false;
+      setStampActionPending(false);
+    }
+    if (!result.ok) {
+      if (result.code !== "UNAUTHORIZED") notify("스탬프 지급 취소가 저장되지 않았습니다. 다시 시도해 주세요.");
+      return;
+    }
     notify("스탬프 지급을 취소했습니다.");
   };
 
@@ -2771,7 +2932,14 @@ function ProfessorStampManager({ course, stamps, setStamps, notify }) {
           <div className="stamp-type-picker">{STAMP_TYPES.map((stamp) => <button key={stamp.type} className={stampType === stamp.type ? "selected" : ""} onClick={() => setStampType(stamp.type)}><span>{stamp.icon}</span><b>{stamp.shortLabel}</b></button>)}</div>
           <div className="stamp-count-picker"><span>지급 개수</span>{[1, 2, 3].map((value) => <button key={value} className={count === value ? "selected" : ""} onClick={() => setCount(value)}>{value}개</button>)}</div>
           <label className="field"><span>메모 <small>선택사항</small></span><input value={memo} onChange={(event) => setMemo(event.target.value)} placeholder="예: 팀 활동에서 역할을 잘 수행함" /></label>
-          <button className="primary large" onClick={giveStamp}>스탬프 지급</button>
+          {!pendingStamp && <button className="primary large" disabled={stampActionPending} onClick={requestStampConfirmation}>스탬프 지급</button>}
+          {pendingStamp && <div className="stamp-give-confirm" role="group" aria-label="스탬프 지급 확인">
+            <p><b>{pendingStamp.studentName}</b> 교육생에게 <b>{pendingStamp.stampLabel} {pendingStamp.count}개</b>를 지급할까요?</p>
+            <div>
+              <button className="secondary" disabled={stampActionPending} onClick={() => setPendingStamp(null)}>돌아가기</button>
+              <button className="primary" disabled={stampActionPending} onClick={giveStamp}>{stampActionPending ? "저장 중…" : "지급 확정"}</button>
+            </div>
+          </div>}
         </div>
       </div>}
 
@@ -2789,7 +2957,7 @@ function ProfessorStampManager({ course, stamps, setStamps, notify }) {
         {history.map((record) => <article key={record.id} className={record.status === "cancelled" ? "cancelled" : ""}>
           <div className="stamp-history-icon">{record.stampIcon}</div>
           <div><b>{record.studentName} · {record.className}</b><p>{record.stampLabel} {record.count}개{record.memo ? ` · ${record.memo}` : ""}</p><span>{new Date(record.createdAt).toLocaleString("ko-KR")}{record.status === "cancelled" ? " · 취소됨" : ""}</span></div>
-          {record.status === "active" && <button className="danger-button compact" onClick={() => cancelStamp(record)}>취소</button>}
+          {record.status === "active" && <button className="danger-button compact" disabled={stampActionPending} onClick={() => cancelStamp(record)}>취소</button>}
         </article>)}
         {!history.length && <div className="board-empty">스탬프 지급 이력이 없습니다.</div>}
       </details>}
@@ -3102,7 +3270,7 @@ function PageBack({ onClick }) {
   return <button className="page-back" onClick={onClick} aria-label="이전 화면으로 돌아가기">← 바로 이전</button>;
 }
 
-function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpReaction, courses, ideologyStamps, setIdeologyStamps, onCreateCourse, onSelectCourse, onUpdateCourse, onArchiveCourse, initialTab, onExit, notify }) {
+function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpReaction, courses, ideologyStamps, onGiveStamp, onCancelStamp, onCreateCourse, onSelectCourse, onUpdateCourse, onArchiveCourse, initialTab, onExit, notify }) {
   const [tab, setTab] = useState(initialTab || "dashboard");
   const [selectedClassFilter, setSelectedClassFilter] = useState(course.classes?.[0]?.id || "class-1");
   const [analysis, setAnalysis] = useState(null);
@@ -3791,7 +3959,7 @@ function ProfessorApp({ course, setCourse, onReloadCourse, onSaveRound, onBumpRe
             </>}
           </section>
         )}
-        {tab === "stamps" && course.type === "ideology" && <ProfessorStampManager course={course} stamps={ideologyStamps.filter((item) => item.courseId === course.code)} setStamps={setIdeologyStamps} notify={notify} />}
+        {tab === "stamps" && course.type === "ideology" && <ProfessorStampManager course={course} stamps={ideologyStamps.filter((item) => item.courseId === course.code)} onGiveStamp={onGiveStamp} onCancelStamp={onCancelStamp} notify={notify} />}
         {tab === "ai" && (
           <section className="content-card">
             <SectionTitle eyebrow="근거 기반 분석" title={`AI 교육 분석 리포트 · ${selectedClass.name}`} action={<button className="primary compact" disabled={!analysisCanRun || analysisStatus === "loading"} onClick={() => { void runAnalysis(analysisKind); }}>{analysisStatus === "loading" ? "분석 중…" : "분석 새로고침"}</button>} />
